@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  rust:
+    name: Rust ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    env:
+      # Turn E2E "binary unavailable, skipping" into a hard failure in CI so
+      # a broken build can't show green E2E suites.
+      LIBRE_CR_E2E_REQUIRED: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+  extension:
+    name: Browser extension
+    runs-on: ubuntu-latest
+    # Becomes meaningful in Phase 5 when the extension scaffold lands.
+    if: ${{ hashFiles('extension/package.json') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: extension/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: extension
+      - run: pnpm typecheck
+        working-directory: extension
+      - run: pnpm test --if-present
+        working-directory: extension
+
+  browser:
+    name: Browser E2E (Playwright)
+    runs-on: ubuntu-latest
+    # Loads the built extension into real Chromium and drives it against a
+    # spawned `libre-cr-review` daemon. Gated behind the same path-check as
+    # the extension job so a cold-clone CI still passes.
+    if: ${{ hashFiles('extension/package.json') != '' }}
+    env:
+      # Turn "binaries failed to build → skip" into a hard failure in CI so a
+      # broken Rust build can't show green browser E2E.
+      LIBRE_CR_E2E_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: extension/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: extension
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: extension
+      - name: Cargo-build daemon binaries
+        # The browser E2E helpers also build these lazily, but pre-building
+        # here makes the failure surface cleaner if the Rust side is broken.
+        run: cargo build -p libre-cr-review --bin libre-cr-review -p libre-cr-code --bin libre-cr-code
+      - run: pnpm test:browser
+        working-directory: extension

@@ -1,0 +1,42 @@
+[package]
+name = "libre-cr-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wrapper CLI that supervises libre-cr-review and libre-cr-code."
+
+# Binary name is short on purpose — users type it constantly.
+# See specs/plan.md Phase 0 table.
+[[bin]]
+name = "libre-cr"
+path = "src/main.rs"
+
+[lib]
+name = "libre_cr_cli"
+path = "src/lib.rs"
+
+[dependencies]
+libre-cr-common = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+nu-ansi-term = "0.50"
+webbrowser = "1"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal", "process"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

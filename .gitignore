@@ -1,0 +1,25 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / extension build artifacts
+node_modules/
+extension/.output/
+extension/.wxt/
+extension/dist/
+extension/coverage/
+
+# Editor and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs / local state
+*.log
+.env
+.env.local
+
+# Dev credentials
+.creds

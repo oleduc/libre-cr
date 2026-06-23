@@ -1,0 +1,15 @@
+/* Minimal styling — just enough to make the diff visible during headed runs. */
+body { font: 13px/1.4 system-ui, -apple-system, sans-serif; margin: 24px; color: #1f2328; }
+.gh-header-title { font-size: 18px; margin: 0 0 6px; }
+.gh-header-meta { font-size: 12px; color: #57606a; margin-bottom: 16px; }
+.gh-header-meta .author::before { content: "@"; }
+.gh-header-meta .commit-ref { margin-left: 8px; padding: 1px 6px; background: #ddf4ff; border-radius: 4px; }
+.pull-discussion-timeline { border: 1px solid #d0d7de; padding: 12px; border-radius: 6px; margin-bottom: 16px; }
+.file { border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
+.file-header { background: #f6f8fa; padding: 6px 12px; font-weight: 600; border-bottom: 1px solid #d0d7de; }
+.diff-table { width: 100%; border-collapse: collapse; font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+.diff-table td { padding: 1px 8px; vertical-align: top; }
+.diff-table td.blob-num { color: #57606a; background: #f6f8fa; text-align: right; width: 40px; user-select: none; }
+.diff-table td.blob-code { white-space: pre; }
+/* Pad the page so scroll_to has somewhere to scroll to. */
+body::after { content: ""; display: block; height: 2000px; }

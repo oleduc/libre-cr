@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>foo/bar · Pull Request #1 — Libre CR fixture</title>
+    <meta
+      name="octolytics-dimension-pull_request_head_sha"
+      content="deadbeefcafe1111deadbeefcafe1111deadbeef"
+    />
+    <link rel="stylesheet" href="/__fixture__/pr-page.css" />
+  </head>
+  <body>
+    <!-- This mirrors the GitHub PR DOM shape the extension's adapter expects.
+         Selectors that matter are kept in extension/utils/github/selectors.ts.
+         Don't rename classes without updating the adapter (or vice versa). -->
+    <div class="gh-header">
+      <h1 class="gh-header-title">
+        <span class="js-issue-title">feat: bcrypt migration</span>
+      </h1>
+      <div class="gh-header-meta">
+        <a class="author">octocat</a>
+        <span class="commit-ref head-ref"
+          ><span class="css-truncate-target">feature/bcrypt</span></span
+        >
+        <span class="commit-ref base-ref"
+          ><span class="css-truncate-target">main</span></span
+        >
+      </div>
+    </div>
+
+    <div class="pull-discussion-timeline">
+      <div class="markdown-body">
+        Migrate from md5 to bcrypt for password hashing. Adds a backfill
+        script and updates the auth module.
+      </div>
+    </div>
+
+    <a id="files_tab" href="/foo/bar/pull/1/files">
+      Files changed <span class="Counter">2</span>
+    </a>
+
+    <!-- Two "files" with a handful of diff rows each. The `tr` shape mirrors
+         GitHub's split-view diff (two blob-num cells per row). The content
+         under `td.blob-code` is what `highlight_lines` decorates. -->
+    <div class="file" data-tagsearch-path="src/auth.ts">
+      <div class="file-header">src/auth.ts</div>
+      <table class="diff-table">
+        <tbody>
+          <tr>
+            <td class="blob-num" data-line-number="10">10</td>
+            <td class="blob-num" data-line-number="10">10</td>
+            <td class="blob-code">function login(user) {</td>
+          </tr>
+          <tr>
+            <td class="blob-num" data-line-number="11">11</td>
+            <td class="blob-num" data-line-number="11">11</td>
+            <td class="blob-code">  return hashPassword(user.password);</td>
+          </tr>
+          <tr>
+            <td class="blob-num" data-line-number="12">12</td>
+            <td class="blob-num" data-line-number="12">12</td>
+            <td class="blob-code">}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="file" data-tagsearch-path="src/users.ts">
+      <div class="file-header">src/users.ts</div>
+      <table class="diff-table">
+        <tbody>
+          <tr>
+            <td class="blob-num" data-line-number="1">1</td>
+            <td class="blob-num" data-line-number="1">1</td>
+            <td class="blob-code">export interface User { id: string }</td>
+          </tr>
+          <tr>
+            <td class="blob-num" data-line-number="2">2</td>
+            <td class="blob-num" data-line-number="2">2</td>
+            <td class="blob-code">export function findUser(id: string) {}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </body>
+</html>
