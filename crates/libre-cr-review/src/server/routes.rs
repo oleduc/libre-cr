@@ -883,4 +883,3 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
 </body>
 </html>
 "#;
-
