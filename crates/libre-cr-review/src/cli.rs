@@ -51,7 +51,15 @@ pub async fn run() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let cfg_path = cli.config.unwrap_or_else(Config::default_path);
+    let cfg_path = match cli.config {
+        Some(p) => p,
+        None => {
+            // Pick up a review.toml stranded at the pre-fix macOS location
+            // (Application Support) before resolving the default.
+            Config::migrate_macos_legacy();
+            Config::default_path()
+        }
+    };
     match cli.command.unwrap_or(Command::Serve) {
         Command::Version => {
             println!("libre-cr-review {}", env!("CARGO_PKG_VERSION"));

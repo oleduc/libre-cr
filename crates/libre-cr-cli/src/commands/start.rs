@@ -39,6 +39,13 @@ pub async fn run(autostart: bool) -> Result<()> {
 
     logs::supervisor_event("start-requested").await.ok();
 
+    // Remove any endpoint file left by a previous run *before* spawning, so
+    // the watcher below announces the fresh daemon's port rather than a stale
+    // one (the daemon uses an ephemeral port by default, so the old contents
+    // are almost always wrong). Found by manual testing: the banner printed a
+    // dead endpoint from the prior session.
+    let _ = std::fs::remove_file(paths::endpoint_file());
+
     // First-run summary, printed *before* we hand the foreground to the
     // supervisor. We can't know the daemon's chosen port until it writes
     // the endpoint file, so we poll for that with a 5 s budget on a side

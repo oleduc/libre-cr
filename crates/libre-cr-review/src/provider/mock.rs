@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::config::ScriptedEvent;
 use crate::error::Result;
 
-use super::{Message, Provider, StreamEvent, ToolSchema};
+use super::{Message, ModelInfo, Provider, StreamEvent, ToolSchema};
 
 /// Provider that replays a script. Each call to `stream` consumes the next
 /// "burst" — events up to and including the next `Done` (or `Error`).
@@ -74,6 +74,21 @@ impl Provider for MockProvider {
 
     async fn validate(&self) -> Result<()> {
         Ok(())
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        // Canned list so the config-UI "Fetch models" flow is testable
+        // without any network access.
+        Ok(vec![
+            ModelInfo {
+                id: "mock-fast".into(),
+                display_name: Some("Mock Fast".into()),
+            },
+            ModelInfo {
+                id: "mock-smart".into(),
+                display_name: Some("Mock Smart".into()),
+            },
+        ])
     }
 }
 

@@ -13,7 +13,45 @@ use serde_json::json;
 
 use crate::error::{Error, Result};
 
-use super::{ContentBlock, Message, Provider, Role, StreamEvent, ToolSchema};
+use super::{ContentBlock, Message, ModelInfo, Provider, Role, StreamEvent, ToolSchema};
+
+/// Derive the `/models` URL from the configured chat-completions endpoint.
+/// The stored endpoint is `.../v1/chat/completions`; swap a trailing
+/// `/chat/completions` for `/models`. For a non-standard endpoint fall back
+/// to `<scheme>://<host>/v1/models`. This also covers Ollama / OpenRouter,
+/// which expose `/models`.
+fn models_url_from_endpoint(endpoint: &str) -> String {
+    if let Some(prefix) = endpoint.strip_suffix("/chat/completions") {
+        return format!("{prefix}/models");
+    }
+    if let Some((scheme, rest)) = endpoint.split_once("://") {
+        let host = rest.split('/').next().unwrap_or(rest);
+        if !host.is_empty() {
+            return format!("{scheme}://{host}/v1/models");
+        }
+    }
+    "https://api.openai.com/v1/models".to_string()
+}
+
+/// Parse the OpenAI `GET /v1/models` response body. Shape:
+/// `{ "data": [ { "id": "gpt-…", "object": "model", … }, … ] }`. There is no
+/// human display name, so `display_name` is always `None`.
+fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
+    body.get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    let id = m.get("id").and_then(|s| s.as_str())?.to_string();
+                    Some(ModelInfo {
+                        id,
+                        display_name: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 pub struct OpenAICompatProvider {
     id: String,
@@ -46,6 +84,13 @@ impl OpenAICompatProvider {
             self.endpoint = endpoint;
         }
         self
+    }
+
+    /// Test-only accessor for the resolved API key, used to assert the
+    /// env-var fallback in `build_provider`.
+    #[cfg(test)]
+    pub(crate) fn api_key_for_test(&self) -> &str {
+        &self.api_key
     }
 
     pub fn build_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
@@ -171,6 +216,32 @@ impl Provider for OpenAICompatProvider {
             return Err(Error::ProviderUnauthorized);
         }
         Ok(())
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        let url = models_url_from_endpoint(&self.endpoint);
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("openai models request: {e}")))?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::ProviderUnauthorized);
+        }
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(Error::ProviderRateLimited);
+        }
+        if !resp.status().is_success() {
+            let s = resp.status();
+            return Err(Error::Internal(format!("openai models status: {s}")));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::Internal(format!("openai models parse: {e}")))?;
+        Ok(parse_models(&body))
     }
 }
 
@@ -476,6 +547,39 @@ mod tests {
             }
             other => panic!("expected Done, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn models_url_swaps_chat_completions_for_models() {
+        assert_eq!(
+            models_url_from_endpoint("https://api.openai.com/v1/chat/completions"),
+            "https://api.openai.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn models_url_handles_ollama_style_endpoint() {
+        // Ollama/local proxy on a custom path → <scheme>://<host>/v1/models.
+        assert_eq!(
+            models_url_from_endpoint("http://localhost:11434/api/chat"),
+            "http://localhost:11434/v1/models"
+        );
+    }
+
+    #[test]
+    fn parse_models_extracts_ids_without_display_name() {
+        let body = serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "gpt-4o", "object": "model"},
+                {"id": "gpt-4o-mini", "object": "model"}
+            ]
+        });
+        let models = parse_models(&body);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-4o");
+        assert_eq!(models[0].display_name, None);
+        assert_eq!(models[1].id, "gpt-4o-mini");
     }
 
     #[test]

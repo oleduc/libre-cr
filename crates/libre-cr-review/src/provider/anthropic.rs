@@ -14,7 +14,45 @@ use serde_json::json;
 
 use crate::error::{Error, Result};
 
-use super::{ContentBlock, Message, Provider, Role, StreamEvent, ToolSchema};
+use super::{ContentBlock, Message, ModelInfo, Provider, Role, StreamEvent, ToolSchema};
+
+/// Derive the `/v1/models` URL from the configured Messages endpoint. The
+/// stored endpoint is the *messages* URL (`.../v1/messages`); we swap a
+/// trailing `/messages` for `/models`. For a non-standard endpoint we fall
+/// back to `<scheme>://<host>/v1/models`.
+fn models_url_from_endpoint(endpoint: &str) -> String {
+    if let Some(prefix) = endpoint.strip_suffix("/messages") {
+        return format!("{prefix}/models");
+    }
+    // Best-effort: keep scheme + authority, force a `/v1/models` path.
+    if let Some((scheme, rest)) = endpoint.split_once("://") {
+        let host = rest.split('/').next().unwrap_or(rest);
+        if !host.is_empty() {
+            return format!("{scheme}://{host}/v1/models");
+        }
+    }
+    "https://api.anthropic.com/v1/models".to_string()
+}
+
+/// Parse the Anthropic `GET /v1/models` response body. Shape:
+/// `{ "data": [ { "type": "model", "id": "claude-…", "display_name": "…" }, … ] }`.
+fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
+    body.get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    let id = m.get("id").and_then(|s| s.as_str())?.to_string();
+                    let display_name = m
+                        .get("display_name")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string());
+                    Some(ModelInfo { id, display_name })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 pub struct AnthropicProvider {
     id: String,
@@ -27,6 +65,13 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
+    fn build_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_default()
+    }
+
     pub fn new(api_key: String, model: String, max_tokens: u32, temperature: f32) -> Self {
         Self {
             id: "anthropic".into(),
@@ -35,10 +80,7 @@ impl AnthropicProvider {
             max_tokens,
             temperature,
             endpoint: "https://api.anthropic.com/v1/messages".into(),
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .unwrap_or_default(),
+            client: Self::build_client(),
         }
     }
 
@@ -47,6 +89,23 @@ impl AnthropicProvider {
             self.endpoint = endpoint;
         }
         self
+    }
+
+    /// Test-only accessor for the resolved API key, used to assert the
+    /// env-var fallback in `build_provider`.
+    #[cfg(test)]
+    pub(crate) fn api_key_for_test(&self) -> &str {
+        &self.api_key
+    }
+
+    /// Assemble the auth/version headers for a request as `(name, value)`
+    /// pairs. Pulled out (with [`Self::build_body`]) so the header + system
+    /// prompt contract is unit-testable without a live HTTP call.
+    pub fn build_headers(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("anthropic-version", "2023-06-01".to_string()),
+            ("x-api-key", self.api_key.clone()),
+        ]
     }
 
     /// Build the JSON body for the Messages API.
@@ -107,12 +166,14 @@ impl Provider for AnthropicProvider {
         tools: &[ToolSchema],
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
         let body = self.build_body(messages, tools);
-        let resp = self
+        let mut req = self
             .client
             .post(&self.endpoint)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        for (name, value) in self.build_headers() {
+            req = req.header(name, value);
+        }
+        let resp = req
             .json(&body)
             .send()
             .await
@@ -140,6 +201,33 @@ impl Provider for AnthropicProvider {
             return Err(Error::ProviderUnauthorized);
         }
         Ok(())
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        let url = models_url_from_endpoint(&self.endpoint);
+        let mut req = self.client.get(&url);
+        for (name, value) in self.build_headers() {
+            req = req.header(name, value);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("anthropic models request: {e}")))?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::ProviderUnauthorized);
+        }
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(Error::ProviderRateLimited);
+        }
+        if !resp.status().is_success() {
+            let s = resp.status();
+            return Err(Error::Internal(format!("anthropic models status: {s}")));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::Internal(format!("anthropic models parse: {e}")))?;
+        Ok(parse_models(&body))
     }
 }
 
@@ -613,6 +701,45 @@ mod tests {
     }
 
     #[test]
+    fn models_url_swaps_messages_for_models() {
+        assert_eq!(
+            models_url_from_endpoint("https://api.anthropic.com/v1/messages"),
+            "https://api.anthropic.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn models_url_handles_nonstandard_endpoint() {
+        // A proxy on a custom path → best-effort <scheme>://<host>/v1/models.
+        assert_eq!(
+            models_url_from_endpoint("https://proxy.example.com:8443/anthropic/relay"),
+            "https://proxy.example.com:8443/v1/models"
+        );
+    }
+
+    #[test]
+    fn parse_models_extracts_id_and_display_name() {
+        let body = serde_json::json!({
+            "data": [
+                {"type": "model", "id": "claude-opus-4", "display_name": "Claude Opus 4"},
+                {"type": "model", "id": "claude-haiku"}
+            ],
+            "has_more": false
+        });
+        let models = parse_models(&body);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "claude-opus-4");
+        assert_eq!(models[0].display_name.as_deref(), Some("Claude Opus 4"));
+        assert_eq!(models[1].id, "claude-haiku");
+        assert_eq!(models[1].display_name, None);
+    }
+
+    #[test]
+    fn parse_models_empty_on_missing_data() {
+        assert!(parse_models(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
     fn builds_body() {
         let p = AnthropicProvider::new("k".into(), "claude-sonnet".into(), 4096, 0.0);
         let body = p.build_body(
@@ -624,5 +751,32 @@ mod tests {
         );
         assert_eq!(body["model"], "claude-sonnet");
         assert_eq!(body["stream"], true);
+    }
+
+    #[test]
+    fn api_key_mode_headers_use_x_api_key() {
+        let p = AnthropicProvider::new("secret".into(), "m".into(), 100, 0.0);
+        let headers = p.build_headers();
+        assert!(headers
+            .iter()
+            .any(|(n, v)| *n == "x-api-key" && v == "secret"));
+        assert!(headers
+            .iter()
+            .any(|(n, v)| *n == "anthropic-version" && v == "2023-06-01"));
+    }
+
+    #[test]
+    fn system_messages_are_joined_into_system_string() {
+        let p = AnthropicProvider::new("k".into(), "m".into(), 100, 0.0);
+        let body = p.build_body(
+            &[Message {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: "You are a code reviewer.".into(),
+                }],
+            }],
+            &[],
+        );
+        assert_eq!(body["system"], "You are a code reviewer.");
     }
 }

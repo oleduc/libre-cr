@@ -18,6 +18,7 @@ export function Popup() {
   const [status, setStatus] = useState<Status>("loading");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [endpoint, setEndpoint] = useState<string | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   const [client, setClient] = useState<DaemonClient | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchHit[]>([]);
@@ -31,6 +32,7 @@ export function Popup() {
         return;
       }
       setEndpoint(auth.endpoint);
+      setToken(auth.token);
       const c = new DaemonClient({ endpoint: auth.endpoint, token: auth.token });
       setClient(c);
       try {
@@ -154,9 +156,12 @@ export function Popup() {
         </section>
       ) : null}
       <div style={{ marginTop: 10, display: "flex", gap: 6 }}>
-        {endpoint ? (
+        {endpoint && token ? (
           <a
-            href={`${endpoint}/config-ui`}
+            // The config UI reads the bearer token from this query param to
+            // authenticate its /v1/config GET+POST (same as `libre-cr config`).
+            // Without it the page loads but every call 401s.
+            href={`${endpoint}/config-ui?token=${encodeURIComponent(token)}`}
             target="_blank"
             rel="noreferrer"
             style={{ fontSize: 12, color: "#0969da" }}
