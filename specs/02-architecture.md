@@ -190,12 +190,19 @@ To use the code daemon directly with no review-daemon involvement:
   - **Daemon → extension:** `text_delta`, `tool_call`, `tool_result`, `presentation_call`, `done`, `error`.
   - **Extension → daemon:** initial `{question, selection, verb}` frame, then `presentation_result` frames in response to each `presentation_call`.
 - See `04-review-daemon.md` for the HTTP API surface and `09-presentation-tools.md` for the presentation frame protocol.
+- The daemon also serves a self-contained configuration web page at `GET /config-ui` (static HTML, token passed via `?token=`) and supporting JSON routes the page consumes: `POST /v1/provider/models` (fetch a candidate provider's live model list) and `GET /v1/provider/detected` (report which ambient env-var keys are available). This page is opened by the wrapper's `libre-cr config` and by the extension popup's "Configure daemon" link, not embedded in the extension. CORS is dynamic: the allowlist is read on every request from the live extension-origin value, so an origin learned during pairing takes effect without a daemon restart.
 
 ### Review daemon ↔ code daemon: MCP over stdio
 
 - Review daemon spawns code daemon as a child process by default. stdio MCP — no port, no auth.
 - Power user mode: review daemon can be configured to connect to an existing code daemon over a Unix socket. Useful when the code daemon is run independently (e.g., for use with Claude Desktop) and the review daemon should reuse it.
 - Tool schemas defined by the code daemon; review daemon dynamically discovers and registers them at startup.
+
+### Typed HTTP wire contract
+
+The review daemon's HTTP response bodies are defined as `Serialize`/`Deserialize` structs in `libre-cr-common` (`http_api.rs`) — `HealthResponse`, `CreateSessionResponse`, `SessionSummary`, `PairIssueResponse`, `PairRedeemResponse`, `SearchResponse`, `ExportResponse`, `ModelsResponse`, `DetectedCredentials`, `VerbDescriptor`, and friends. The Rust side is the source of truth; the extension's `frames.ts` mirrors these shapes. Field renames are breaking changes. This replaces the earlier pattern of building responses from ad-hoc `json!` literals, which had let the Rust and TS shapes drift independently.
+
+The shared crate also defines `PROTOCOL_VERSION` (currently `1`). The daemon reports it in `GET /v1/health` (`protocol_version`); the extension carries a matching constant and does a soft version check on each session init (a mismatch logs a warning and is surfaced in the Options diagnostics, but never blocks).
 
 ### Review daemon ↔ external MCP client: MCP over stdio or SSE
 
@@ -210,7 +217,7 @@ To use the code daemon directly with no review-daemon involvement:
 
 | State | Lives in | Notes |
 |---|---|---|
-| LLM provider config + API key | Review daemon's config file (encrypted at rest) | User edits via daemon's config; extension does NOT see the key |
+| LLM provider config + API key | Review daemon's config file (encrypted at rest) | User edits via the daemon's config UI at `/config-ui`; extension does NOT see the key. If no key is saved, the daemon falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from its environment |
 | Bearer token for extension↔daemon | `~/.config/libre-cr/token` (mode 0600) | Generated on first daemon start |
 | Per-PR conversation history | Review daemon's SQLite DB | One row per turn, keyed by `(pr_url, turn_id)` |
 | Investigation verb definitions | Review daemon's source code (Rust) | Phase B: hardcoded. Plugin model deferred. |

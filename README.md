@@ -43,6 +43,7 @@ rest of the stack. See the [FAQ](docs/user-guide/faq.md).
 | | Start here | Contents |
 |---|---|---|
 | **Using it** | [`docs/user-guide/`](docs/user-guide/README.md) | [Installation](docs/user-guide/installation.md) · [Configuration](docs/user-guide/configuration.md) · [Daily workflow](docs/user-guide/using.md) · [Troubleshooting](docs/user-guide/troubleshooting.md) · [FAQ](docs/user-guide/faq.md) |
+| **Testing it by hand** | [`docs/manual-testing.md`](docs/manual-testing.md) | Three tiers: automated suites → keyless mock smoke → full real run, plus observability and reset |
 | **Working on it** | [`docs/development/`](docs/development/README.md) | [Setup](docs/development/setup.md) · [Architecture as built](docs/development/architecture.md) · [Conventions](docs/development/conventions.md) · [Testing](docs/development/testing.md) · [Extending](docs/development/extending.md) · [Release](docs/development/release.md) |
 | **Design intent** | [`specs/`](specs/01-overview.md) | The ten spec files that define the product; [`plan.md`](specs/plan.md) is the build sequence |
 | **Contributing** | [`CONTRIBUTING.md`](CONTRIBUTING.md) | The short version + pointers |

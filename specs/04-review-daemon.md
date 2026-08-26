@@ -30,7 +30,7 @@ A **session** corresponds 1:1 with a PR (identified by `pr_url`). It holds the c
 - **`POST /v1/sessions`**
   Body: `{ pr_url: string, pr_data: ScrapedPRData }`
   Creates or updates a session for this PR. The extension calls this on PR page load with everything it could scrape. Response includes the session id and worktree readiness state.
-  Returns: `{ session_id, worktree_ready: bool, repo_local_path: string | null }`
+  Returns: `{ session_id, worktree_ready: bool, repo_local_path: string | null, pending_action: string | null, pr_diff_changed: bool, head_sha: string | null }`. `pending_action` is `"worktree_pending"` while the worktree is being prepared in the background; `pr_diff_changed` is `true` when the incoming `head_sha` differs from the one previously recorded for this PR (drives the "PR diff changed" banner).
 
 - **`GET /v1/sessions/:id`**
   Full session state: PR metadata, conversation turns, current worktree path.
@@ -46,7 +46,9 @@ A **session** corresponds 1:1 with a PR (identified by `pr_url`). It holds the c
 - **`WS /v1/sessions/:id/ask`**
   WebSocket upgrade. The client opens it once per Q&A turn (not per session — a fresh socket per question keeps state simple and lets either side disconnect cleanly).
 
-  Client → server (first frame): `{ question: string, selection?: Selection, verb?: string }`
+  Client → server (first frame): `{ question: string, selection?: Selection, verb?: string, mute_presentations?: bool }`
+
+  When `mute_presentations` is `true` the daemon does not register the presentation tools for that turn at all, so the model cannot emit `presentation_call` frames — the mute toggle genuinely suppresses presentations rather than relying on the extension to ignore them. The extension also gates locally as defense in depth: while muted it answers any stray `presentation_call` with `{ ok: false, error: "presentation_muted" }`.
 
   Server → client frames:
   ```
@@ -90,14 +92,30 @@ A **session** corresponds 1:1 with a PR (identified by `pr_url`). It holds the c
 
 ### Config
 
-- **`GET /v1/config`** — non-sensitive config (provider name, model, feature flags). API key is never returned.
-- **`POST /v1/config`** — update provider config from the daemon's own config web UI (NOT the extension; see "Configuration UI" below).
-- **`POST /v1/config/validate`** — test the configured provider with a one-shot call.
+- **`GET /v1/config`** — non-sensitive config (provider kind, model, max_tokens, temperature, endpoint, limits, global instructions, mcp_server flags). API key is never returned.
+- **`POST /v1/config`** — update provider config from the daemon's own config web UI (NOT the extension; see "Configuration UI" below). The body is a partial `{ provider: { kind?, model?, max_tokens?, temperature?, endpoint?, api_key? } }` patch; a plaintext `api_key` is encrypted before it lands in the config. The route is transactional: it builds a candidate config, *proves a provider constructs from it* (so a typo'd `kind` is rejected with `400` before anything changes), atomically persists `review.toml`, then commits and hot-swaps the running provider. A failed disk write is a `500` with nothing applied — never a silent `{ok:true}` that evaporates on restart. **Provider changes take effect immediately, with no daemon restart** (the running provider is held behind a swappable cell that this route updates).
+- **`POST /v1/config/validate`** — validate a provider. With no body it validates the *currently-stored* provider; with a provider patch body it validates that candidate. Either way it builds the provider fresh and calls `validate()` — never the stale startup snapshot.
+- **`POST /v1/provider/models`** — list the models offered by a *candidate* provider. The body is a provider patch (same shape as `POST /v1/config`); the daemon applies it to a clone of the current config, builds an ephemeral provider, and returns `{ models: [{ id, display_name? }] }`. Nothing is persisted. Lets the config UI populate a model dropdown for a new provider+key before saving. Providers opt in; ones that don't support listing return a validation error.
+- **`GET /v1/provider/detected`** → `{ anthropic, openai }`. Reports which ambient env vars (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) are set in the daemon's environment so the config UI can offer a "leave the key blank" path.
 
 ### Health
 
-- **`GET /v1/health`** → `{ ok, version, code_daemon: { connected, version } }`
-- **`GET /v1/health/code-daemon`** → detailed code-daemon health (last error, restart count).
+- **`GET /v1/health`** → `{ ok, version, protocol_version, code_daemon: { connected, version } }`. `protocol_version` is `libre_cr_common::PROTOCOL_VERSION`; the extension does a soft compatibility check against its own copy. The `code_daemon` block reflects the real child state via the wrapper's health hook (the `{connected:true, version:"mock"}` fallback exists only for in-process tests).
+- **`GET /v1/health/code-daemon`** → detailed code-daemon health (`connected`, `version`, `last_error`, `restart_count`).
+
+### Pairing
+
+- **`POST /v1/pair/issue`** — token-authenticated issuer for one-time pairing codes. Body: `{ ttl_seconds?: number }` (clamped to 30 s … 15 min, default 300 s). Returns `{ code, expires_at_epoch_ms }`. The wrapper's `libre-cr pair` (and `libre-cr-review pair`) call this so codes land in the *running* daemon's pairing store — issuing a code locally in a CLI is meaningless, since the extension redeems against the daemon. The requested TTL is actually applied to the stored code, not merely echoed.
+- **`POST /v1/pair`** — redeem a pairing code (no bearer token; this is how the extension obtains one). Body: `{ code, extension_origin? }`. Per-code TTL is enforced and failed attempts are rate-limited per source IP (a `429` with `Retry-After` after too many failures in a window). On success returns `{ token, extension_origin }`; a supplied `extension_origin` is persisted to `review.toml` and applied to the live CORS allowlist immediately (no restart).
+
+### Search and verbs
+
+- **`GET /v1/search?q=&limit=`** — cross-session full-text search over the conversation history (SQLite FTS5). Returns `{ results: [{ session_id, pr_url, turn_id, snippet, score }] }`.
+- **`GET /v1/verbs`** — the investigation-verb catalog as `[{ id, label, required_selection, description, suggested_tools }]`. See `06-investigation-verbs.md`.
+
+### Configuration UI
+
+- **`GET /config-ui`** — a self-contained static HTML configuration page (no templating). It reads its bearer token from `?token=` and posts to `/v1/config`, fetches `/v1/provider/models` and `/v1/provider/detected`. See § Configuration UI below.
 
 ## MCP Server Surface (External Clients)
 
@@ -220,14 +238,17 @@ async fn run_turn(
             }
         }
 
-        // Dispatch tool calls in parallel
+        // Dispatch every tool call in this turn concurrently, preserving the
+        // model's order for the result blocks (join_all returns outputs in
+        // input order).
         let assistant_msg = make_assistant_message(text_buf, &tool_uses);
         messages.push(assistant_msg);
 
+        for tu in &tool_uses { sink.tool_call(tu).await?; }
+        let outcomes = join_all(tool_uses.iter().map(|tu| ctx.tool_router.dispatch(tu))).await;
+
         let mut tool_result_blocks = Vec::new();
-        for tu in tool_uses {
-            sink.tool_call(&tu).await?;
-            let result = ctx.tool_router.dispatch(&tu).await;
+        for (tu, result) in tool_uses.iter().zip(outcomes) {
             sink.tool_result(&tu.id, &result).await?;
             tool_traces.push(ToolTrace { call: tu.clone(), result: result.clone() });
             tool_result_blocks.push(make_tool_result_block(&tu.id, &result));
@@ -242,9 +263,11 @@ async fn run_turn(
 Key properties:
 
 - **Streaming text** flows to the UI as it arrives. Tool calls also stream so the panel can show what's happening.
-- **Tool calls within a single LLM turn run in parallel.** A typical "find callers and history" question results in 2-3 concurrent tool dispatches.
+- **Tool calls within a single LLM turn run in parallel** via `join_all`. A typical "find callers and history" question results in 2-3 concurrent tool dispatches; their result blocks are reassembled in the model's original order.
 - **Bounded** at `MAX_TOOL_TURNS = 25`. Past this, the agent has clearly gone off the rails — return an error. (Verbs that legitimately need many turns should chain explicitly, not blow this budget.)
 - **Cancellation** is via `tokio::select!` on the client-disconnect signal; partial state is persisted with `cancelled` status.
+- **Token usage is real.** The Anthropic stream parser reads `input_tokens` from `message_start` (`message.usage`) and `output_tokens` + `stop_reason` from `message_delta` (the API does not put them on `message_stop`); the OpenAI-compatible parser requests `stream_options: { include_usage: true }`. The final `done` frame and the per-turn `usage_in`/`usage_out` columns carry the actual tallies.
+- **Turn ordinals are assigned inside the insert transaction** (`insert_turn_auto_ordinal`) so concurrent note/turn writes on a session can't collide on the `UNIQUE(session_id, ordinal)` constraint.
 
 ## Tool Router
 
@@ -293,13 +316,20 @@ trait Provider: Send + Sync {
     async fn stream(&self, messages: &[Message], tools: &[Tool])
         -> Result<impl Stream<Item = Result<StreamEvent>> + Send>;
     async fn validate(&self) -> Result<()>;
+    // Providers opt in; the default returns "not supported".
+    async fn list_models(&self) -> Result<Vec<ModelInfo>>;
 }
 ```
 
-Built-in providers for v2:
+Provider kinds for v2 (`provider.kind` in config):
 
-- **Anthropic** — official Messages API. Streaming SSE. Tool-use loop. Retry on 429/529 with exponential backoff. 120 s timeout.
-- **OpenAI-compatible** — chat completions with tool calls. Works against api.openai.com, OpenRouter, Ollama, and any compatible endpoint.
+- **`mock`** — no network; canned responses for development and tests.
+- **`anthropic`** — official Messages API. Streaming SSE. Tool-use loop. 120 s timeout. Implements `list_models` via `GET /v1/models`.
+- **`openai_compat`** — chat completions with tool calls. Works against api.openai.com, OpenRouter, Ollama, and any compatible endpoint.
+
+Both streaming parsers are symmetric on failure: an `event: error` frame becomes a `StreamEvent::Error` carrying the API's message (rather than a generic "ended without done"), and buffered tool-call state is flushed into a `ToolUse` on early EOF instead of being silently dropped. Streamed tool inputs are accumulated per block/call id and emitted as a single well-formed `ToolUse`, never per-fragment.
+
+Credential resolution (`anthropic` / `openai_compat`): the stored (decrypted) key always wins; when it is empty the daemon falls back to the standard ambient environment variable for the kind — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. This lets a user with the env var set never paste a key. Env vars only — the daemon never reads Claude Code / Claude CLI credentials, keychains, or `~/.claude/*` (Anthropic's terms restrict subscription OAuth tokens to Claude Code itself).
 
 Configuration includes:
 - Model
@@ -379,8 +409,8 @@ data_dir = "~/.local/share/libre-cr-review"
 db = "~/.local/share/libre-cr-review/state.db"
 
 [provider]
-kind = "anthropic"             # "anthropic" | "openai_compat"
-api_key_enc = "<encrypted>"    # AES-GCM, key derived from machine-bound material
+kind = "anthropic"             # "mock" | "anthropic" | "openai_compat"
+api_key_enc = "<encrypted>"    # AES-GCM; empty → fall back to ANTHROPIC_API_KEY / OPENAI_API_KEY env var. Unused by "mock".
 model = "claude-sonnet-4-7-20260101"   # placeholder
 max_tokens = 4096
 temperature = 0.0
@@ -411,19 +441,24 @@ session_idle_evict_days = 90
 
 The extension does **not** edit provider config or store the API key. Two reasons: (a) the LLM call happens in the daemon, so the key belongs there; (b) the extension's options page is a leaky abstraction across multiple PR-review surfaces.
 
-The daemon serves a minimal config UI at `http://127.0.0.1:<port>/config-ui` (token-protected). The user navigates to it once during setup; the extension opens it on a "configure" link. The UI lets the user set provider, model, key, and global instructions.
+The daemon serves a minimal config UI at `http://127.0.0.1:<port>/config-ui` — a self-contained static HTML page, no templating. It reads its bearer token from the `?token=` query parameter (the wrapper's `libre-cr config` and the extension popup both open the URL with the token already appended) and attaches it as `Authorization: Bearer` on the JSON calls it makes. The token only ever appears in the URL the user already trusts to launch the daemon; it is never baked into stored markup.
+
+The page lets the user set provider kind, model, max tokens, temperature, endpoint, and API key (posted to `POST /v1/config`). Two conveniences ride the supporting routes:
+
+- A **"Fetch models"** button calls `POST /v1/provider/models` with the in-progress provider+key and populates a model dropdown (for `anthropic`), so the user can pick a model rather than typing an id. The free-text model field stays the source of truth; the dropdown just copies into it.
+- On load it calls `GET /v1/provider/detected` and shows a hint when an ambient credential is available ("`ANTHROPIC_API_KEY` detected — leave the key blank to use it").
 
 Pairing flow (first run):
 
-1. User installs extension and runs `libre-cr-review` (instructions in `08-distribution.md`).
-2. Daemon prints/logs its endpoint and token. User clicks the daemon's "Pair extension" button in the config UI, which generates a one-time pairing code.
-3. Extension's options page asks for the pairing code. On submit, it hits `/v1/pair` with the code and receives `{ token, extension_origin_to_register }`.
-4. Daemon records the extension's origin in config. Subsequent requests are authenticated by the token and origin-checked.
+1. User installs extension and runs the daemon via `libre-cr start` (instructions in `08-distribution.md`).
+2. The user runs `libre-cr pair`, which issues a one-time code through the running daemon (`POST /v1/pair/issue`).
+3. Extension's options page accepts the pairing code (typed, or pre-filled from a pairing deep-link). On submit it hits `POST /v1/pair` with the code and its origin, and receives `{ token, extension_origin }`.
+4. Daemon persists the extension's origin to `review.toml` and applies it to the live CORS allowlist immediately. Subsequent requests are authenticated by the token and origin-checked.
 
 ## Concurrency and Cancellation
 
 - Each WS connection is a `tokio` task. Many can be open concurrently (different PRs or follow-up questions).
-- A single PR session can have at most one in-flight `ask`. Concurrent attempts on the same session return `409 Conflict`. (We could queue them, but for code review the extra UX complexity isn't worth it; reviewer can wait.)
+- A single PR session can have at most one in-flight `ask`. Concurrent attempts on the same session return `409 Conflict`. (We could queue them, but for code review the extra UX complexity isn't worth it; reviewer can wait.) The single-flight claim is an RAII drop-guard, so a failed WS upgrade or a handler panic releases the session instead of leaving it wedged at `409` until restart.
 - Cancellation paths:
   - Client closes WS → server aborts.
   - User closes the PR tab → extension closes WS → server aborts.

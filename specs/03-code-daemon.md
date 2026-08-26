@@ -278,11 +278,13 @@ Remote URLs are canonicalized:
 
 `discover_repo` queries by canonicalized remote URL.
 
+The registry database carries a `_schema_version` table with versioned, forward-refusing migrations — the same pattern the review daemon's storage uses. The daemon refuses to open a database stamped with a newer schema version than it knows about.
+
 ### Worktree management
 
 - **Location:** `~/.local/share/libre-cr-code/worktrees/<repo_id>/<sanitized-ref>`.
 - **Creation:** `git fetch <ref>` against the canonical remote, then `git worktree add --detach <path> FETCH_HEAD`. Detached HEAD because we have no intention of letting the user commit into a managed worktree.
-- **Reuse:** `prepare_worktree` is idempotent. If the worktree exists, fetch + reset to the new `FETCH_HEAD` if the ref has moved (e.g., PR head force-pushed). Updates `last_used_at`.
+- **Reuse:** `prepare_worktree` is idempotent but never serves stale code. When the worktree already exists it still re-fetches the ref and, if the worktree's `HEAD` diverges from the freshly fetched tip (e.g., the PR head was force-pushed), it `git reset --hard`s the worktree to `FETCH_HEAD`. The fetch is skipped only when the caller passes an `expected_sha` that already matches. Updates `last_used_at`. This guarantees the reviewer reads the current PR head rather than a cached older revision while the extension's "PR diff changed" banner is showing.
 - **Eviction:** Background task wakes hourly. If total worktree disk usage > threshold (default 5 GB, configurable), evict by `last_used_at` ascending until under threshold. Eviction = `git worktree remove --force`.
 - **Cleanup on parent death:** Worktrees persist across daemon restarts. They're real on-disk artifacts the user might want to inspect. The daemon does not delete them at shutdown.
 
@@ -300,7 +302,7 @@ Remote URLs are canonicalized:
 
 ## Configuration
 
-Config file: `~/.config/libre-cr-code/config.toml`. Created on first run with defaults.
+Config file: `~/.config/libre-cr/code.toml`. Created on first run with defaults. All wrapper-managed config lives under the single `~/.config/libre-cr/` namespace (see `08-distribution.md` § Configuration Layout). The legacy path `~/.config/libre-cr-code/config.toml` is still recognized: if only the legacy file exists, the daemon migrates it into the shared namespace once on load. Data and state still live under `~/.local/share/libre-cr-code/` — only the config file moved.
 
 ```toml
 [storage]
@@ -370,9 +372,11 @@ These are targets, not guarantees. Repos differ. The daemon logs every tool call
 ## Concurrency
 
 - All tools are async (`tokio`). Multiple MCP clients can issue tool calls concurrently.
+- **Requests on a single MCP connection are dispatched concurrently**, bounded by a semaphore (`MAX_CONCURRENT_REQUESTS`), so one slow tool call (e.g. a minutes-long cold `prepare_worktree` fetch) does not head-of-line-block every later request on the same connection. A single writer task serializes the response bytes so concurrent handlers never interleave their output. The MCP `initialize` handshake is the one exception: it is answered inline before any later request is spawned.
+- Git subprocesses (`fetch`, `worktree add`, `reset`, `rev-parse`) run via `tokio::process` so they never block a tokio worker thread.
 - The repo registry uses a single SQLite connection guarded by a mutex (writes are infrequent; reads are quick). Upgrade to a connection pool if needed.
 - The AST cache and language servers (phase C) use per-language locks; a slow Python analysis doesn't block a Rust query.
-- Worktree creation for the same `(repo_id, ref)` is single-flighted: concurrent `prepare_worktree` calls share a single in-flight fetch.
+- Worktree creation for the same `(repo_id, ref)` is single-flighted: concurrent `prepare_worktree` calls share a single in-flight fetch. The single-flight map holds `Weak` references and is pruned on every acquire, so it stays bounded by the number of *in-flight* prepares rather than growing one entry per ref ever requested.
 
 ## Error Model
 
@@ -385,6 +389,7 @@ Error codes (extensible):
 - `worktree_busy` — another caller is preparing the same worktree (caller should retry).
 - `unsupported_language` — operation requires a grammar/LSP not configured.
 - `not_in_workspace` — file is outside the repo.
+- `validation_failed` — malformed tool input (bad/missing arguments, schema mismatch). This code is the shared envelope vocabulary across the daemons and the extension; it is the same string as `libre_cr_common::ErrorCategory::ValidationFailed`.
 - `internal` — bug or unexpected condition; details include a backtrace in debug builds.
 
 The review daemon translates these into user-facing messages with retry/recover suggestions.

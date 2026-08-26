@@ -41,6 +41,7 @@ daemon. Full detail (including the ownership invariant and failure handling):
 - [testing.md](testing.md) — every suite, every command, CI matrix
 - [extending.md](extending.md) — recipes: new tool, verb, presentation tool, provider, route
 - [release.md](release.md) — release pipeline state, versioning policy, compatibility
+- [../manual-testing.md](../manual-testing.md) — tiered by-hand walkthrough (automated suites → mock smoke → real run)
 
 ## Orientation tips
 

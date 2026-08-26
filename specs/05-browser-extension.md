@@ -162,7 +162,7 @@ A floating widget tied to the current session. Three regions:
 
 Behavior:
 
-- **Conversation scrolls.** New turns append at the bottom. Old turns collapse to single-line summaries; click to expand.
+- **Conversation scrolls.** New turns append at the bottom. Older turns collapse to single-line summaries when a new question lands; click a collapsed summary to expand. Collapse is a *controlled* prop owned by the panel (not seeded once from local component state), so the collapse-older behavior actually re-applies as the conversation grows.
 - **Thinking trace** is collapsed by default. Click expands to show the sequence of tool calls + truncated results. The reviewer should *want* to look at this when they're skeptical.
 - **Notes** look distinct from Q&A turns: gray background, no thinking trace, simple text.
 - **Verbs** are buttons. Clicking one immediately runs the verb against the current selection — no question text required. The result appears as a Q&A turn with the verb's name as the question.
@@ -188,6 +188,8 @@ A small subsystem in the extension that:
 - Dispatches to the underlying implementation (from the POC's `UIController`).
 - Tags every applied effect with `(session_id, turn_id, effect_id)` and tracks it in a session-scoped effect registry.
 - Sends back a `presentation_result` frame with `{ ok, result?: { effect_id }, error?, message? }`.
+
+A per-session **🔇 mute** toggle suppresses presentations for the current session. It is not cosmetic: when set, the extension sends `mute_presentations: true` in the WS `AskInit` frame, and the daemon responds by not registering the presentation tools for that turn at all — so the model never emits `presentation_call` frames while muted. As defense in depth the handler also gates locally: any stray `presentation_call` arriving during a muted session is answered with `{ ok: false, error: "presentation_muted" }` rather than executed, so the agent turn still completes. The mute state is persisted per session in `browser.storage.local`.
 
 Effects are cleared on:
 - User clicks "Clear all" in the Q&A panel footer.
@@ -218,6 +220,8 @@ Settings (options page) for presentation behavior:
 | `daemon.extension_origin` | `chrome-extension://<id>` | What the daemon will allow via CORS |
 | `ui.theme_override` | `"system" \| "dark" \| "light"` | Optional |
 | `ui.panel_position` | `{ x, y, width, height }` per `pr_url` | Persisted floating widget geometry |
+| `session.presentations_muted` | `Record<session_id, bool>` | Per-session 🔇 mute state |
+| `ui.protocol_mismatch` | `{ at, daemon, extension }` or absent | Set by the soft protocol-version check; surfaced in Options diagnostics |
 
 Nothing about conversations, sessions, or PRs lives here. The daemon is the source of truth.
 
@@ -235,19 +239,24 @@ The extension popup (toolbar icon) shows:
 
 - Daemon status (connected / not paired / unreachable).
 - A list of recent sessions across all PRs (top 5).
-- A "Configure daemon" button → opens daemon's config UI in a new tab.
+- A "Configure daemon" link → opens the daemon's config UI in a new tab, with the bearer token appended as `?token=` (`<endpoint>/config-ui?token=<token>`) so the page can authenticate its JSON calls without a separate login.
 - A "Pair extension" button → opens the extension's options page.
 
 Useful for jumping back to a PR you reviewed yesterday without having to navigate GitHub.
 
 ## Options Page
 
-- **Daemon pairing** (endpoint + token).
+- **Daemon pairing** (endpoint + token). Accepts a typed pairing code and also handles pairing **deep-links** (`?endpoint=…&code=…`): when the options page is opened with those query params it pre-fills and can auto-complete pairing. This is the default pairing path (option **B** above); manual code entry remains the fallback.
 - **Theme override.**
+- **Presentation settings** — auto-clear on new question (default on), `open_link` target toggles, and a global "disable presentation tools" switch.
 - **Per-PR panel reset** (clears stored positions).
-- **Diagnostics** (last daemon error, time of last successful call).
+- **Diagnostics** (last daemon error, time of last successful call, and any protocol-version mismatch recorded by the soft health check).
 
 Provider/LLM/API-key config is **not** here. That's on the daemon's config UI.
+
+### Protocol-version check
+
+On session init the extension reads `protocol_version` from `GET /v1/health` and compares it to its own `PROTOCOL_VERSION` constant (mirrored from `libre-cr-common`). A mismatch never blocks anything — minor versions are wire-compatible by spec — it logs a console warning and records `ui.protocol_mismatch` for the Options diagnostics panel. A missing field (an older, pre-versioning daemon) is treated as compatible.
 
 ## Error Surfaces
 
