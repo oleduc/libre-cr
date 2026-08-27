@@ -39,8 +39,12 @@ export function QaPanel(props: QaPanelProps) {
   const [stepIndex, setStepIndex] = useState(-1);
   const [labelsVisible, setLabelsVisible] = useState(true);
   const [tourOpen, setTourOpen] = useState(false);
+  /** Armed = opened by the assistant's presentation, waiting for the reviewer's first click. */
+  const [tourArmed, setTourArmed] = useState(false);
+  const autoOpenedRef = useRef(false);
   const openTour = useCallback((i: number) => {
     setTourOpen(true);
+    setTourArmed(false);
     setStepIndex(i);
     void presentationRef.current.showStep(i);
   }, []);
@@ -59,6 +63,13 @@ export function QaPanel(props: QaPanelProps) {
         annotations: mm.annotationsCount,
         steps: mm.steps.length,
       });
+      // The assistant's first presentation call of a turn opens the tour,
+      // armed: nothing scrolls until the reviewer clicks.
+      if (mm.steps.length > 0 && !autoOpenedRef.current) {
+        autoOpenedRef.current = true;
+        setTourArmed(true);
+        setTourOpen(true);
+      }
     });
     return () => {
       off();
@@ -173,6 +184,8 @@ export function QaPanel(props: QaPanelProps) {
       presentationRef.current.resetSteps();
       setStepIndex(-1);
       setTourOpen(false);
+      setTourArmed(false);
+      autoOpenedRef.current = false;
       const turnId = newTurnId();
       // Mark earlier qa turns collapsed.
       setTurns((all) =>
@@ -523,6 +536,8 @@ export function QaPanel(props: QaPanelProps) {
         <TourWidget
           steps={presentationRef.current.steps}
           index={Math.max(0, stepIndex)}
+          armed={tourArmed}
+          onStart={() => openTour(0)}
           onStep={openTour}
           onShowAll={() => {
             setStepIndex(effects.steps - 1);

@@ -383,6 +383,10 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   panel offers a **Tour (N)** button opening a floating widget (bottom-centre,
   big Prev/Next, counter, title, file:line, explanation, Show all, close) that
   shows one step at a time (`showStep`: clear → apply → verified scroll).
+  Follow-up: the assistant's first presentation call of a turn opens the widget
+  *armed* — one big "Scroll to first highlight" button, nothing scrolls until
+  the reviewer clicks; opening from the footer goes straight to the controls.
+  Live effects never scroll.
   *Trigger: manual testing — "timing is brutal", "the AI's text should be there".*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).

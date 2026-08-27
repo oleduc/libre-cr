@@ -115,16 +115,8 @@ export function createPresentationManager(
       if (tool !== "clear_presentation" && tool !== "open_link") {
         state.steps.push({ tool, input });
       }
-      // Follow along: a live highlight/annotation brings its first row into
-      // view so the page tracks the assistant as it talks. (The tour widget
-      // gives the reviewer control afterwards.)
-      if (tool === "highlight_lines" || tool === "annotate_line") {
-        const line = input.start_line ?? input.line;
-        if (typeof input.file === "string" && typeof line === "number") {
-          const row = findRow(input.file, line, ctx.root);
-          if (row) void scrollIntoViewSettled(row, "center");
-        }
-      }
+      // Live effects land silently: every scroll is reviewer-initiated (the
+      // tour widget opens armed on the first call and waits for a click).
       session.sendPresentationResult(call_id, true, { effect_id: outcome.effect_id });
     } else {
       session.sendPresentationResult(call_id, false, undefined, outcome.error, outcome.message);

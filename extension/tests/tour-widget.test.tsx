@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { TourWidget } from "../components/TourWidget";
 
@@ -9,6 +9,8 @@ const steps = [
 ];
 
 describe("TourWidget", () => {
+  afterEach(cleanup); // no global auto-cleanup in this vitest setup
+
   it("shows the step title, location and explanation, and navigates", () => {
     const onStep = vi.fn();
     render(<TourWidget steps={steps} index={0} onStep={onStep} onShowAll={() => {}} onClose={() => {}} />);
@@ -19,5 +21,16 @@ describe("TourWidget", () => {
     expect((screen.getByLabelText("Previous step") as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByLabelText("Next step"));
     expect(onStep).toHaveBeenCalledWith(1);
+  });
+
+  it("armed mode offers only 'Scroll to first highlight' and scrolls nothing itself", () => {
+    const onStart = vi.fn();
+    const onStep = vi.fn();
+    render(<TourWidget steps={steps} index={0} armed onStart={onStart} onStep={onStep} onShowAll={() => {}} onClose={() => {}} />);
+    expect(screen.queryByLabelText("Next step")).toBeNull();
+    expect(screen.getByTestId("tour-count").textContent).toBe("2 highlights");
+    fireEvent.click(screen.getByTestId("tour-start"));
+    expect(onStart).toHaveBeenCalled();
+    expect(onStep).not.toHaveBeenCalled();
   });
 });

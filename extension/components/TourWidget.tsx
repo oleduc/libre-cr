@@ -10,6 +10,10 @@ export interface TourWidgetProps {
   onStep: (index: number) => void;
   onShowAll: () => void;
   onClose: () => void;
+  /** Opened by the assistant's own presentation calls: show a single
+   *  "Scroll to first highlight" action and scroll nothing until it is clicked. */
+  armed?: boolean;
+  onStart?: () => void;
 }
 
 function stepTitle(step: PresentationStep, i: number): string {
@@ -19,7 +23,32 @@ function stepTitle(step: PresentationStep, i: number): string {
   return `${step.tool} ${file}`.trim() || `Step ${i + 1}`;
 }
 
-export function TourWidget({ steps, index, onStep, onShowAll, onClose }: TourWidgetProps) {
+export function TourWidget({
+  steps,
+  index,
+  onStep,
+  onShowAll,
+  onClose,
+  armed = false,
+  onStart,
+}: TourWidgetProps) {
+  if (armed) {
+    return (
+      <div className="libre-cr-tour" role="dialog" aria-label="Highlight tour" data-testid="tour">
+        <div className="libre-cr-tour-nav">
+          <button className="libre-cr-tour-btn primary" onClick={onStart} data-testid="tour-start">
+            Scroll to first highlight
+          </button>
+          <span className="libre-cr-tour-count" data-testid="tour-count">
+            {steps.length} highlight{steps.length === 1 ? "" : "s"}
+          </span>
+          <button className="libre-cr-tour-btn" onClick={onClose} aria-label="Close tour">
+            ✕
+          </button>
+        </div>
+      </div>
+    );
+  }
   const step = steps[index];
   if (!step) return null;
   const detail = typeof step.input.detail === "string" ? step.input.detail : "";
