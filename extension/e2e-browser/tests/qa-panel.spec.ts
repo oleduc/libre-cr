@@ -169,4 +169,44 @@ test.describe("Q&A panel", () => {
       await browser.context.close();
     }
   });
+  test("keystrokes in the panel do not reach GitHub's document-level hotkeys", async () => {
+    const browser = await launchWithExtension();
+    try {
+      await injectAuth(browser, daemon);
+      await interceptGithub(browser.context);
+
+      const page = await browser.context.newPage();
+      await page.goto(FIXTURE_PR_URL);
+      const host = page.locator("#libre-cr-root");
+      await expect(host).toHaveCount(1, { timeout: 5_000 });
+      await expect
+        .poll(
+          async () =>
+            host.evaluate((el) => !!(el as HTMLElement).shadowRoot?.querySelector("textarea")),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+
+      // Stand-in for GitHub's hotkey library: a document-level keydown listener.
+      await page.evaluate(() => {
+        (window as unknown as { __keys: string[] }).__keys = [];
+        document.addEventListener("keydown", (e) =>
+          (window as unknown as { __keys: string[] }).__keys.push(e.key),
+        );
+      });
+      await host.evaluate((el) => {
+        (el as HTMLElement).shadowRoot!.querySelector<HTMLTextAreaElement>("textarea")!.focus();
+      });
+      await page.keyboard.type("st");
+
+      const leaked = await page.evaluate(() => (window as unknown as { __keys: string[] }).__keys);
+      expect(leaked).toEqual([]);
+      const value = await host.evaluate(
+        (el) => (el as HTMLElement).shadowRoot!.querySelector("textarea")!.value,
+      );
+      expect(value).toBe("st");
+    } finally {
+      await browser.context.close();
+    }
+  });
 });
