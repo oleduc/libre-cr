@@ -21,7 +21,7 @@ If `libre-cr-code` is "an MCP server for any repo," `libre-cr-review` is "the as
 
 ## HTTP / WebSocket API (Extension Transport)
 
-All endpoints require `Authorization: Bearer <token>`. CORS allows only the configured extension origin. All responses are JSON unless noted.
+All endpoints require `Authorization: Bearer <token>`. CORS is permissive (`*`): the bearer token is the security boundary, and a content script's requests carry the page origin (`https://github.com`), not the extension's, so an origin allowlist cannot work. All responses are JSON unless noted.
 
 ### Sessions
 
@@ -402,7 +402,7 @@ bind = "127.0.0.1"
 port = 0                       # 0 = ephemeral; resolved port written to endpoint file
 endpoint_file = "~/.config/libre-cr/endpoint"
 token_file = "~/.config/libre-cr/token"
-extension_origin = ""          # written by extension on first-run pairing
+extension_origin = ""          # written by extension on first-run pairing; informational only
 
 [storage]
 data_dir = "~/.local/share/libre-cr-review"
@@ -453,7 +453,7 @@ Pairing flow (first run):
 1. User installs extension and runs the daemon via `libre-cr start` (instructions in `08-distribution.md`).
 2. The user runs `libre-cr pair`, which issues a one-time code through the running daemon (`POST /v1/pair/issue`).
 3. Extension's options page accepts the pairing code (typed, or pre-filled from a pairing deep-link). On submit it hits `POST /v1/pair` with the code and its origin, and receives `{ token, extension_origin }`.
-4. Daemon persists the extension's origin to `review.toml` and applies it to the live CORS allowlist immediately. Subsequent requests are authenticated by the token and origin-checked.
+4. Daemon persists the extension's origin to `review.toml` (diagnostics only — CORS does not key on it). Subsequent requests are authenticated by the token and origin-checked.
 
 ## Concurrency and Cancellation
 
@@ -477,7 +477,7 @@ Categories:
 | Code | Meaning | Extension reaction |
 |---|---|---|
 | `unauthorized` | Bad/missing token | Re-pair prompt |
-| `origin_rejected` | CORS / origin mismatch | Re-pair prompt |
+| `origin_rejected` | reserved (origin checks removed; CORS is `*`) | — |
 | `code_daemon_unavailable` | Child crashed, restart pending | Show banner, allow retry |
 | `provider_unauthorized` | LLM key bad | Link to config UI |
 | `provider_rate_limited` | 429 | Show toast, retry after delay |

@@ -195,6 +195,80 @@ beyond what either certification round reviewed.
 Known-imperfect items the certifications flagged that were **intentionally not
 fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
 
+- **BUG — content-script CORS: the extension cannot reach the daemon from a PR
+  page.** `05-browser-extension.md` § Transport from a Content Script assumes a
+  content script's `fetch` carries the extension origin. It does not (Chrome ≥ 85 /
+  MV3): it carries the *page* origin, `https://github.com`. Pairing persists
+  `chrome-extension://<id>` as the sole CORS allow-origin, so every daemon call
+  from the CR panel fails with `transport: Failed to fetch`. The browser E2E is
+  green only because its harness sets `extension_origin = "https://github.com"`
+  (`e2e-browser/helpers/daemon.ts:35-41`) — the test encodes the workaround
+  instead of the production behaviour. **Fixed in two steps.** (1) CORS is
+  now `*` and the auth middleware's origin check is gone — the bearer token is
+  the boundary; the unauthenticated routes (`/v1/health`, rate-limited
+  `/v1/pair`) were reachable by anything on the machine via curl regardless.
+  `extension_origin` is still persisted on pair, for diagnostics only.
+  (2) That was necessary but not sufficient: a content script's `fetch` also
+  inherits the page **CSP**, and github.com's `connect-src` excludes
+  127.0.0.1 — Chrome fired `securitypolicyviolation` and the request never
+  left the browser. Daemon traffic from the content script is now relayed
+  through the background service worker (`utils/daemon/proxy.ts` +
+  `entrypoints/background.ts`) via the `fetch` / `wsFactory` injection points
+  the client already had; the browser-E2E fixture page now carries
+  `connect-src 'self'` so the suite exercises this for real. *Trigger: manual
+  testing Tier 2. Specs: 02 transports; 04 § HTTP API, § Pairing; 05
+  § Transport from a Content Script, § Background Service Worker.*
+- **GitHub's React "changes" UI broke every DOM selector.** github.com now
+  redirects `/pull/<n>/files` → `/pull/<n>/changes`, a React page with none of
+  the classic hooks: no `.gh-header-title`, no `.base-ref/.head-ref`, no
+  `td.blob-num`, no `[data-tagsearch-path]`, no head-SHA `<meta>`. The panel
+  showed "missing title / missing base-head — selectors may need refresh", and
+  line selection + highlights silently found nothing. **Fixed:** selectors now
+  cover both DOMs (`h1 .markdown-title`; `a[class*=PullRequestBranchName]` in
+  base→head order; `table[aria-label="Diff for: <path>"]`;
+  `td[data-line-number][data-diff-side]`; head SHA from the
+  `react-app.embeddedData` JSON's `headOid`). `SELECTOR_VERSION` → 2; new
+  fixture test `tests/github-react-ui.test.ts`. *Trigger: manual testing Tier 2.
+  Specs: 05 (GitHub adapter and selectors).*
+- **Typing in the panel triggered GitHub hotkeys ("t" focused GitHub search).**
+  Shadow-DOM retargeting: a keystroke in the panel's textarea reaches
+  `document` with `target` = the `#libre-cr-root` host, so GitHub's hotkey
+  handler sees a non-editable target and fires. **Fixed:** the host stops
+  `keydown`/`keypress`/`keyup` propagation at the shadow boundary; React's own
+  listeners sit inside the shadow and are unaffected. *Trigger: manual testing
+  Tier 2. Specs: 05 § Content Script Lifecycle.*
+- **Mock provider answered only the first question.** `MockProvider` consumed
+  its script one burst per `stream()` and then returned an empty stream, which
+  the agent loop reports as `internal: provider stream ended without done` on
+  the second ask. Correct for multi-burst unit scenarios, a trap for the
+  documented keyless Tier 2 flow. **Fixed:** the queue refills from the script
+  when exhausted (empty scripts stay empty). *Trigger: manual testing Tier 2.
+  Specs: 04 § LLM Provider Layer (mock).*
+- **Provider `endpoint` wanted the full request URL while the docs promised a
+  base URL.** `openai_compat` POSTed to the string verbatim, so the documented
+  `http://127.0.0.1:11434/v1` (and OpenRouter's `https://openrouter.ai/api/v1`)
+  would 404, and the derived `/models` URL was wrong too. **Fixed:** both
+  providers accept a `/v1` base (appending `/chat/completions` or `/messages`)
+  or the full path. *Trigger: manual testing Tier 3 (OpenRouter). Specs: 04
+  § LLM Provider Layer; docs configuration.md.*
+- **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
+  dev reload of the extension forces a new pairing (and a new 5-minute code).
+  Folds into the pairing-UX item above. *Trigger: manual testing.*
+- **BUG — `libre-cr stop` does not stop the supervisor.** `stop` SIGTERMs the PID
+  in the pid file, which is the *review daemon* child; the supervisor logs
+  `unclean-exit code=None` and respawns it 250 ms later (on a fresh ephemeral
+  port), and the next `start` reports "already running". `stop` must target the
+  supervisor, or the supervisor must treat a stop-requested TERM as intentional.
+  *Trigger: manual testing — restart after a config edit.*
+- **Pairing UX: one-time code + 5-minute TTL is a bad experience.** Manual
+  testing: the code expired before the extension was loaded and the options
+  form filled in (endpoint must also be re-typed — the form defaults to
+  `:8765` while the daemon picks an ephemeral port). Needs an easier path:
+  e.g. `libre-cr pair` prints/opens the existing auto-pair deep link
+  (`#pair?endpoint=…&code=…&auto=1`) once the extension origin is known, a
+  fixed default port so the endpoint never needs typing, or an inverted flow
+  where the extension requests and the CLI approves — no code to copy at all.
+  *Trigger: manual testing — pairing said "unauthorized" on an expired code.*
 - **`MockProvider` / `MockCodeDaemonClient` fallback in production is silent.** A
   misconfigured install can get fake answers with no warning. *(round-1 suggestion;
   round-2 arch failure-matrix.)*

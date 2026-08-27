@@ -17,7 +17,7 @@ The extension owns no LLM logic, no code intelligence, no conversation persisten
 
 These elements ported as-is or with minor edits:
 
-- **GitHub adapter and selectors** (`src/platform/github/adapter.ts`, `selectors.ts`). The selector versioning and shadow-DOM-piercing approach are correct and worth preserving. Selector list will need refresh by the time we build — GitHub markup changes.
+- **GitHub adapter and selectors** (`src/platform/github/adapter.ts`, `selectors.ts`). The selector versioning and shadow-DOM-piercing approach are correct and worth preserving. Selector list will need refresh by the time we build — GitHub markup changes. (It did: `utils/github/selectors.ts` now covers both the classic server-rendered PR page and the React "changes" UI that `/pull/<n>/files` redirects to — title, base/head refs, per-file `table[aria-label="Diff for: …"]`, `td[data-line-number][data-diff-side]`, and the head SHA from the embedded page JSON. `SELECTOR_VERSION = 2`.)
 - **Shadow DOM shell** (`createShadowRootUi`). Style isolation is required.
 - **Theme detection** (`src/ui/theme.ts`). GitHub dark/light + system-pref fallback.
 - **Floating widget mechanics** — drag, resize, tile, position memory. The Q&A panel is a floating widget. Tiling stays as a power-user feature; the tile grid is genuinely useful when the user wants two PRs open and pinned side-by-side.
@@ -27,7 +27,7 @@ These elements ported as-is or with minor edits:
 ## What Is Removed Or Replaced
 
 - The function/command runtime (`functions/runtime.ts`, registry, built-in functions). Replaced by direct calls to the daemon's HTTP/WS API.
-- Background service worker as LLM call host. Background script becomes a thin proxy for daemon communication (or is removed if content scripts can hold WS connections directly — see "Transport from a Content Script" below).
+- Background service worker as LLM call host. Background script is a thin relay for daemon communication (HTTP + WebSocket) — see "Transport from a Content Script" below.
 - API key storage. The extension no longer stores or sees the API key; that's the daemon's concern.
 - `UIController` as a tool-callable contract. The *contract* is replaced by the presentation-tools layer: the LLM calls a fixed set of presentation tools registered in the review daemon, the daemon routes them back over the WS as `presentation_call` frames, and the extension executes them locally using the POC's existing `UIController` implementations (highlight, annotate, scroll, navigate). The DOM-injection code itself carries over. See `09-presentation-tools.md`.
 
@@ -57,9 +57,15 @@ Same as POC: WXT + React + TypeScript. Manifest V3. Tailwind in Shadow DOM via W
 
 ## Transport from a Content Script
 
-Calling `127.0.0.1` from a content script's page-origin context is subject to CORS but otherwise works in modern browsers. The daemon explicitly allows the extension origin via the pairing dance. WebSocket has the same origin model.
+The content script **cannot** call `127.0.0.1` directly. Under MV3 a content script's `fetch`/`WebSocket` run with the **page's** origin (`https://github.com`) *and* the page's **CSP** — and github.com's `connect-src` does not include 127.0.0.1, so the request is blocked before it leaves the browser (`securitypolicyviolation`, surfaced as `Failed to fetch`). Found in manual testing; no daemon-side setting can fix a CSP GitHub sets.
 
-If a future browser tightens this, the fallback is to proxy all daemon traffic through the service worker, which has `host_permissions` for `127.0.0.1` and is not bound to the page origin. We design the daemon-client TS module so it can be hosted in either context.
+All daemon traffic from the content script is therefore relayed through the background service worker, which is bound to neither the page origin nor its CSP and has `host_permissions` for `127.0.0.1`:
+
+- HTTP: `DaemonClient` is constructed with `fetch: daemonFetch()` (`utils/daemon/proxy.ts`), which sends `{url, method, headers, body}` via `runtime.sendMessage`; the worker performs the fetch and returns `{status, statusText, headers, body}`, rebuilt into a `Response`.
+- WebSocket: `AskSession` gets `wsFactory: daemonWsFactory()`, a `WSLike` over a `runtime.connect` port; the worker owns the real socket and relays `open` / `message` / `error` / `close` frames. A dropped port surfaces as close code 1006.
+- Extension pages (popup, options) keep calling the daemon directly — they run in the extension origin with no page CSP.
+
+The daemon's CORS is `*`; the bearer token is the security boundary. The browser-E2E fixture page sets `connect-src 'self'` so the suite fails if the relay regresses.
 
 ## First-Run Pairing
 
@@ -227,11 +233,11 @@ Nothing about conversations, sessions, or PRs lives here. The daemon is the sour
 
 ## Background Service Worker
 
-Minimal in v2:
+Thin relay for the content script's daemon traffic (see § Transport from a Content Script — the direct path is blocked by GitHub's CSP):
 
-- `OPEN_OPTIONS_PAGE` → opens options.
-- (Optional) Proxy for daemon traffic if a future browser forbids the content script direct path.
-- Lifecycle: not much. The worker can sleep.
+- `libre-cr/fetch` message → performs the HTTP request, answers `{status, statusText, headers, body}`.
+- `libre-cr/ws` port → owns the WebSocket for one ask turn, relays frames both ways; closes the socket when the port disconnects.
+- Lifecycle: an open port / active WebSocket keeps the worker alive for the turn; otherwise it can sleep.
 
 ## Popup
 
