@@ -2,6 +2,7 @@
 // instantiates one of these per active session.
 
 import type { AskSession } from "../daemon/ws";
+import { findRow } from "../github/diff";
 import {
   PresentationContext,
   PresentationResult,
@@ -30,6 +31,8 @@ export interface PresentationManager {
   replayTo(index?: number): Promise<void>;
   /** Forget the recorded steps (start of a new question). */
   resetSteps(): void;
+  /** Show or hide the highlight caption chips on the page. */
+  setLabelsVisible(visible: boolean): void;
   highlightsCount: number;
   annotationsCount: number;
   attach(session: AskSession): () => void;
@@ -128,7 +131,20 @@ export function createPresentationManager(
         const outcome = await dispatchPresentationCall(ctx, step.tool, step.input);
         if (outcome.ok) state.effects.push({ effect_id: outcome.effect_id, tool: step.tool });
       }
+      // Stepping is how the reviewer follows the tour: land on the current step.
+      const current = state.steps[upTo];
+      const line = current && (current.input.start_line ?? current.input.line);
+      if (current && typeof current.input.file === "string" && typeof line === "number") {
+        try {
+          findRow(current.input.file, line, ctx.root)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        } catch {
+          // jsdom
+        }
+      }
       fire();
+    },
+    setLabelsVisible(visible: boolean) {
+      ctx.root.documentElement.classList.toggle("libre-cr-hide-labels", !visible);
     },
     resetSteps() {
       state.steps.length = 0;

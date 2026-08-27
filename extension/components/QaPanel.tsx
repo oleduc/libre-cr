@@ -36,6 +36,7 @@ export function QaPanel(props: QaPanelProps) {
   const [effects, setEffects] = useState({ highlights: 0, annotations: 0, steps: 0 });
   /** Replay cursor into the current turn's presentation steps (-1 = none). */
   const [stepIndex, setStepIndex] = useState(-1);
+  const [labelsVisible, setLabelsVisible] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -519,6 +520,17 @@ export function QaPanel(props: QaPanelProps) {
             </button>
           </span>
         ) : null}
+        <button
+          aria-pressed={labelsVisible}
+          title={labelsVisible ? "Hide the captions next to highlights" : "Show the captions next to highlights"}
+          onClick={() => {
+            const v = !labelsVisible;
+            setLabelsVisible(v);
+            presentationRef.current.setLabelsVisible(v);
+          }}
+        >
+          {labelsVisible ? "Captions on" : "Captions off"}
+        </button>
         <button
           onClick={() => presentationRef.current.clearAll()}
           title="Remove highlights and annotations from the diff (the conversation stays)"

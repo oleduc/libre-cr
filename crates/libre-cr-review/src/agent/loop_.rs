@@ -57,7 +57,11 @@ fn build_system_prompt(
     s.push_str(
         "You are libre-cr's review assistant. The reviewer asks questions about \
          a specific pull request; you answer with grounded references to the \
-         code. Prefer concise, structured answers.",
+         code. Prefer concise, structured answers. Earlier answers in this \
+         conversation may rest on tool results that were wrong or incomplete at \
+         the time; when a fresh tool result disagrees with something said \
+         before, the tool result wins — re-derive from it rather than repeating \
+         the earlier claim.",
     );
     if let Some(path) = worktree {
         s.push_str(&format!(
@@ -78,9 +82,11 @@ fn build_system_prompt(
              in the browser: highlight_lines, annotate_line, scroll_to, \
              open_link, clear_presentation. When the reviewer asks you to walk \
              through, point out, show or highlight parts of the PR, highlight \
-             each part you describe (highlight_lines with a short label, in the \
-             order you present them) — that is the expected deliverable, not an \
-             extra. For plain questions, use them only when they help. The \
+             each part you describe (highlight_lines with a short label that \
+             matches the heading you use in the answer, in the order you present \
+             them) — that is the expected deliverable, not an extra. Finish a \
+             walkthrough with scroll_to on the first highlighted part so the \
+             reviewer starts where you started. For plain questions, use them only when they help. The \
              answer text remains primary. If a presentation call fails for one \
              file (e.g. file_not_in_view), say so briefly and continue with the \
              others — never abandon the rest of the walkthrough over it.",

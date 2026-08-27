@@ -55,4 +55,25 @@ describe("presentation replay", () => {
     m.resetSteps();
     expect(m.steps).toEqual([]);
   });
+
+  it("renders a caption chip for the label and honours the visibility switch", async () => {
+    const m = createPresentationManager();
+    const { session, emit } = fakeSession();
+    m.attach(session);
+    emit({ type: "presentation_call", call_id: "c1", tool: "highlight_lines",
+      input: { file: "src/a.ts", start_line: 1, end_line: 2, color: "green", label: "Guard rail" } });
+    await flush();
+    const chips = document.querySelectorAll(".libre-cr-label");
+    expect(chips.length).toBe(1); // first row of the range only
+    expect(chips[0]!.textContent).toBe("Guard rail");
+    expect(chips[0]!.closest("tr")!.querySelector("td.blob-num")!.getAttribute("data-line-number")).toBe("1");
+
+    m.setLabelsVisible(false);
+    expect(document.documentElement.classList.contains("libre-cr-hide-labels")).toBe(true);
+    m.setLabelsVisible(true);
+    expect(document.documentElement.classList.contains("libre-cr-hide-labels")).toBe(false);
+
+    m.clearAll();
+    expect(document.querySelectorAll(".libre-cr-label").length).toBe(0);
+  });
 });

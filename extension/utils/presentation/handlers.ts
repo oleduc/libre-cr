@@ -3,7 +3,7 @@
 // All effects are tagged with `data-libre-cr-effect-id` and `data-libre-cr-tag`
 // for scoped removal. Annotation text uses `textContent`, never `innerHTML`.
 
-import { ensureFileRendered, fileContainer, findRow } from "../github/diff";
+import { CODE_CELL_SEL, ensureFileRendered, fileContainer, findRow } from "../github/diff";
 
 export type PresentationColor = "red" | "yellow" | "green" | "blue" | "purple";
 export type PresentationSeverity = "info" | "suggestion" | "warning" | "critical";
@@ -83,7 +83,20 @@ export function highlightLines(
     row.setAttribute("data-libre-cr-effect-id", effectId);
     row.setAttribute("data-libre-cr-tag", "highlight");
     row.setAttribute("data-libre-cr-color", color);
-    if (input.label) row.setAttribute("title", input.label);
+    if (input.label) {
+      row.setAttribute("title", input.label);
+      // Caption chip at the right end of the range's first code line, so the
+      // reviewer can tie the highlight to the answer without hovering.
+      if (applied === 0) {
+        const cell = row.querySelector<HTMLElement>(CODE_CELL_SEL);
+        if (cell && !cell.querySelector(".libre-cr-label")) {
+          const chip = ctx.root.createElement("span");
+          chip.className = "libre-cr-label";
+          chip.textContent = input.label; // never innerHTML
+          cell.appendChild(chip);
+        }
+      }
+    }
     applied++;
   }
   if (applied === 0) {
@@ -220,6 +233,7 @@ export function clearPresentation(
         el.removeAttribute("data-libre-cr-tag");
         el.removeAttribute("data-libre-cr-color");
         el.removeAttribute("title");
+        el.querySelectorAll(".libre-cr-label").forEach((c) => c.remove());
         el.classList.remove(
           "libre-cr-effect",
           ...Array.from(el.classList).filter((c) => c.startsWith("libre-cr-hl-")),

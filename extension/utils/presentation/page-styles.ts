@@ -18,6 +18,12 @@ tr[data-libre-cr-tag="annotation"] > td.libre-cr-annotation-cell {
 tr[data-libre-cr-tag="annotation"].libre-cr-sev-suggestion > td { background: #ddf4ff; border-left-color: #0969da; }
 tr[data-libre-cr-tag="annotation"].libre-cr-sev-warning > td    { background: #fff8c5; border-left-color: #bf8700; }
 tr[data-libre-cr-tag="annotation"].libre-cr-sev-critical > td   { background: #ffebe9; border-left-color: #cf222e; }
+tr[data-libre-cr-tag="highlight"] .libre-cr-label {
+  float: right; margin-left: 12px; padding: 0 7px; border-radius: 10px; white-space: nowrap;
+  font: 600 11px/18px system-ui, -apple-system, sans-serif; color: #fff; background: var(--libre-cr-hl);
+  opacity: 0.92; user-select: none; pointer-events: none;
+}
+html.libre-cr-hide-labels .libre-cr-label { display: none; }
 tr[data-libre-cr-tag="flash"] > td { animation: libre-cr-flash 1.4s ease-out; }
 @keyframes libre-cr-flash { 0%, 40% { background: rgba(9, 105, 218, 0.35); } 100% { background: transparent; } }
 `;

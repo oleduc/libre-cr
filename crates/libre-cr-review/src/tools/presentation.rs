@@ -24,7 +24,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "highlight_lines".into(),
-            description: "Highlight a range of lines in the PR diff shown in the browser. Use this whenever the reviewer asks you to point out, show, mark or highlight code. Line numbers are NEW-side (right/after) numbers of the PR head; for deleted lines use the OLD-side number. Works for any file in the PR diff (the browser scrolls the file into view if needed).".into(),
+            description: "Highlight a range of lines in the PR diff shown in the browser. Use this whenever the reviewer asks you to point out, show, mark or highlight code. ALWAYS pass `label`: it is rendered as a caption next to the code and is how the reviewer ties the highlight to your answer — make it the short heading of the part you are describing (≤ 8 words). Line numbers are NEW-side (right/after) numbers of the PR head; for deleted lines use the OLD-side number. Works for any file in the PR diff (the browser scrolls the file into view if needed).".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

@@ -347,6 +347,26 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   presentation required a paid model call each time. The presentation manager
   now records each successful call as a step; the panel footer gets ◀ k/N ▶ and
   Replay (clear, then re-apply steps 0..k). *Trigger: manual testing.*
+- **Highlights were hard to relate to the answer.** The `label` the model
+  passes with `highlight_lines` was only a hover `title`. It is now a caption
+  chip floating at the right end of the range's first code line (attribute-keyed
+  CSS, so GitHub re-renders leave it alone), with a "Captions on/off" footer
+  toggle; the prompt/tool description make the label mandatory and tied to the
+  answer's heading, and ask for a closing `scroll_to` on the first part. The
+  replay widget scrolls to each step's row as you step. *Trigger: manual testing
+  — first clean 7-highlight walkthrough, but no scroll and no way to map chips
+  to sections.*
+- **The phantom CDK rollback came back — from history.** After the three-dot
+  fix `get_pr_diff` was correct, but the agent loop replays prior Q&A and the
+  model repeated its own earlier (wrong-diff) section over the fresh tool
+  output. Prompt now states that current tool results outrank earlier answers.
+  Sessions answered before the fix stay contaminated; the test session was
+  deleted so the reviewer starts clean. Deeper fix (not done): store the tool
+  results a turn relied on and drop/flag turns whose inputs changed.
+- **`session_history_search` crashed on ordinary queries** (`no such column:
+  33392`): raw text went straight into FTS5 `MATCH`, where `-` and `"` are
+  syntax. Tokens are now individually quoted (`fts_query`). *Trigger: manual
+  testing trace.*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

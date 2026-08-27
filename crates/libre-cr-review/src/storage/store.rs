@@ -373,6 +373,7 @@ impl Store {
              ORDER BY score DESC
              LIMIT ?2",
         )?;
+        let query = fts_query(query);
         let rows = stmt.query_map(params![query, limit as i64], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -429,6 +430,7 @@ impl Store {
              LIMIT ?3",
         )?;
         let mut out = Vec::new();
+        let query = fts_query(query);
         let rows = stmt.query_map(params![session_id, query, limit as i64], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
@@ -437,6 +439,16 @@ impl Store {
         }
         Ok(out)
     }
+}
+
+/// Turn free text into an FTS5 MATCH expression: every whitespace-separated
+/// token becomes a quoted string (implicit AND). Raw user text is FTS syntax —
+/// `POKA-33392` parsed as `POKA` minus column `33392` ("no such column").
+pub(crate) fn fts_query(raw: &str) -> String {
+    raw.split_whitespace()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Turn + FTS mirror + tool traces, executed on the caller's transaction.
@@ -779,5 +791,47 @@ mod tests {
         .unwrap();
         let hits = s.search_turns(&sess.session_id, "bcrypt", 5).await.unwrap();
         assert!(!hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fts_search_tolerates_hyphens_and_quotes() {
+        let store = Store::open_in_memory().unwrap();
+        let sess = store
+            .upsert_session("https://github.com/a/b/pull/1", serde_json::json!({}))
+            .await
+            .unwrap();
+        let ord = store.next_ordinal(&sess.session_id).await.unwrap();
+        let t = Turn {
+            turn_id: "t_fts".into(),
+            session_id: sess.session_id.clone(),
+            ordinal: ord,
+            kind: TurnKind::Question,
+            status: TurnStatus::Ok,
+            verb: None,
+            question: Some("POKA-33392 OAuthClient?".into()),
+            selection: None,
+            answer: Some("It adds the resolver.".into()),
+            user_content: None,
+            severity: None,
+            usage_in: 0,
+            usage_out: 0,
+            created_at: 0,
+            source_turn_id: None,
+        };
+        store.insert_turn(&t, &[]).await.unwrap();
+        assert_eq!(
+            fts_query(r#"POKA-33392 "quoted" x"#),
+            r#""POKA-33392" """quoted""" "x""#
+        );
+        let hits = store
+            .search_turns(&sess.session_id, "POKA-33392 OAuthClient", 5)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(store
+            .search_turns(&sess.session_id, "nothing-here", 5)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }
