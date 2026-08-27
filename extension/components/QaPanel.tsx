@@ -473,7 +473,12 @@ export function QaPanel(props: QaPanelProps) {
           {effects.highlights} highlight{effects.highlights === 1 ? "" : "s"} ·{" "}
           {effects.annotations} annotation{effects.annotations === 1 ? "" : "s"}
         </span>
-        <button onClick={() => presentationRef.current.clearAll()}>Clear all</button>
+        <button
+          onClick={() => presentationRef.current.clearAll()}
+          title="Remove highlights and annotations from the diff (the conversation stays)"
+        >
+          Clear highlights
+        </button>
       </div>
       {error ? <div className="libre-cr-error">{error}</div> : null}
       {exportOpen ? (

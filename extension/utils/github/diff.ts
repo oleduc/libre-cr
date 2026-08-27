@@ -16,8 +16,12 @@ export interface ResolvedLine extends DiffLineRef {
   row: HTMLTableRowElement;
 }
 
-const FILE_CONTAINER_SEL = '[data-tagsearch-path], table[aria-label^="Diff for: "]';
-const NUM_CELL_SEL = "td.blob-num, td[data-line-number]";
+/** Per-file diff container, either DOM. */
+export const FILE_CONTAINER_SEL = '[data-tagsearch-path], table[aria-label^="Diff for: "]';
+/** Line-number cells, either DOM. */
+export const NUM_CELL_SEL = "td.blob-num, td[data-line-number]";
+/** Code cells, either DOM. */
+export const CODE_CELL_SEL = "td.blob-code, td.diff-text-cell";
 const DIFF_FOR = "Diff for: ";
 
 /** File path of a diff container matched by `FILE_CONTAINER_SEL`, either DOM. */
@@ -86,8 +90,13 @@ export function hitTestLine(node: Node | null): DiffLineRef | null {
   const fileEl = ancestorMatching<HTMLElement>(row, FILE_CONTAINER_SEL);
   const file = fileEl ? filePathOf(fileEl) : null;
   if (!file) return null;
-  const numCells = row.querySelectorAll<HTMLTableCellElement>(NUM_CELL_SEL);
-  for (const cell of Array.from(numCells)) {
+  // React UI: the clicked cell itself carries the line number and side (code
+  // cells included), so honour the side the user actually clicked. Classic
+  // DOM code cells don't, so fall back to the row's first numbered cell.
+  const own = ancestorMatching<HTMLTableCellElement>(node, "td[data-line-number]");
+  const cells = own && own.closest("tr") === row ? [own] : [];
+  cells.push(...Array.from(row.querySelectorAll<HTMLTableCellElement>(NUM_CELL_SEL)));
+  for (const cell of cells) {
     const v = cell.getAttribute("data-line-number") ?? cell.textContent?.trim() ?? "";
     const n = Number(v);
     if (Number.isFinite(n) && n > 0) {

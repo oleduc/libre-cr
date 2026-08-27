@@ -20,6 +20,34 @@ function buildDiffFixture(): HTMLElement {
   return container;
 }
 
+function buildReactUiFixture(): HTMLElement {
+  const table = document.createElement("table");
+  table.setAttribute("aria-label", "Diff for: src/b.rs");
+  table.innerHTML =
+    '<tbody><tr class="diff-line-row">' +
+    '<td class="focusable-grid-cell new-diff-line-number" data-diff-side="left" data-line-number="7">7</td>' +
+    '<td class="focusable-grid-cell new-diff-line-number" data-diff-side="right" data-line-number="8">8</td>' +
+    '<td class="diff-text-cell focusable-grid-cell" data-diff-side="right" data-line-number="8">let x = 1;</td>' +
+    "</tr></tbody>";
+  document.body.appendChild(table);
+  return table;
+}
+
+describe("SelectionLayer — GitHub React 'changes' UI", () => {
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = "";
+  });
+
+  it("selects a line from the new DOM's cells", () => {
+    const table = buildReactUiFixture();
+    const onSelect = vi.fn<(s: Selection | null) => void>();
+    render(<SelectionLayer onSelect={onSelect} />);
+    fireEvent.click(table.querySelector("td.diff-text-cell")!);
+    expect(onSelect).toHaveBeenCalledWith({ kind: "line", file: "src/b.rs", line: 8 });
+  });
+});
+
 describe("SelectionLayer — click scoping (I14)", () => {
   afterEach(() => {
     cleanup();

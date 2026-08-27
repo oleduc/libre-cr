@@ -271,6 +271,25 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   `call_with_timeout` on the client trait; `clone_repo` / `prepare_worktree`
   get 10 min, tool calls keep 10 s. *Trigger: manual testing Tier 3, private
   repo. Specs: 04 § Worktree orchestration.*
+- **Presentation effects were invisible.** `highlight_lines` tagged rows with
+  `libre-cr-effect libre-cr-hl-<color>` and `annotate_line` inserted rows, but
+  no stylesheet anywhere defined those classes — the only `<style>` lives in the
+  panel's shadow root and can't reach GitHub's rows. Users saw nothing (or bare
+  unstyled annotation text), so "Clear all" looked like a no-op even though it
+  cleared correctly (verified live: DOM markers and counters reset). **Fixed:**
+  page-level effect CSS installed via `adoptedStyleSheets` (CSSOM insertion is
+  outside GitHub's `style-src` CSP), and the footer button renamed "Clear
+  highlights" so it isn't read as clearing the conversation. *Trigger: manual
+  testing Tier 3. Specs: 09 § presentation handler.*
+- **Closing the panel left no way to reopen it** — `ContentApp` rendered
+  nothing when closed. **Fixed:** a small fixed "CR" reopen button remains.
+  *Trigger: manual testing.*
+- **Line selection did nothing on the React "changes" UI.** `SelectionLayer`
+  gated clicks on `[data-tagsearch-path]` and `td.blob-num/.blob-code`.
+  **Fixed:** it uses the shared dual-DOM selectors from `utils/github/diff.ts`;
+  `hitTestLine` now honours the clicked cell's own line/side (React UI code
+  cells carry `data-line-number`/`data-diff-side`) instead of always taking
+  the row's first (old-side) number. *Trigger: manual testing.*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

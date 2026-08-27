@@ -2,7 +2,13 @@
 
 import { useEffect } from "react";
 import type { Selection } from "../utils/selection";
-import { hitTestLine, pickIdentifier } from "../utils/github/diff";
+import {
+  CODE_CELL_SEL,
+  FILE_CONTAINER_SEL,
+  NUM_CELL_SEL,
+  hitTestLine,
+  pickIdentifier,
+} from "../utils/github/diff";
 
 export interface SelectionLayerProps {
   onSelect: (sel: Selection | null) => void;
@@ -15,21 +21,22 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
     const click = (ev: MouseEvent) => {
       const target = ev.target as Node | null;
       // I14: although this listener is document-wide (capture), only clicks
-      // that land on diff-table cells inside a `[data-tagsearch-path]`
-      // container may mutate the selection. Never hijack links, buttons or
-      // GitHub's own interactive affordances inside a diff row.
+      // that land on diff-table cells inside a per-file diff container (either
+      // GitHub DOM — see `utils/github/selectors.ts`) may mutate the
+      // selection. Never hijack links, buttons or GitHub's own interactive
+      // affordances inside a diff row.
       let el: Element | null = target instanceof Element ? target : null;
       if (!el && target) el = target.parentElement;
       if (!el) return;
       if (el.closest("a, button, input, select, textarea, summary, [role='button']")) return;
-      if (!el.closest("[data-tagsearch-path]")) return;
-      if (!el.closest("td.blob-num, td.blob-code")) return;
+      if (!el.closest(FILE_CONTAINER_SEL)) return;
+      if (!el.closest(`${NUM_CELL_SEL}, ${CODE_CELL_SEL}`)) return;
       const hit = hitTestLine(target);
       if (!hit) return;
       // Cmd-click → symbol; shift-click → range start/end; plain click → line.
       if (ev.metaKey || ev.ctrlKey) {
         // Try to pick the identifier from the line text.
-        const td = (target as Element | null)?.closest?.("tr")?.querySelector?.("td.blob-code");
+        const td = (target as Element | null)?.closest?.("tr")?.querySelector?.(CODE_CELL_SEL);
         if (td) {
           const text = td.textContent ?? "";
           // Best-effort column: use mouse offset proportional to text length.

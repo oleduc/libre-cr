@@ -4,6 +4,22 @@
 export const PANEL_STYLES = `
 :host, :root { all: initial; }
 * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+.libre-cr-reopen {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  color: #1f2328;
+  font: 600 13px/1 system-ui, -apple-system, sans-serif;
+  box-shadow: 0 8px 24px rgba(140, 149, 159, 0.2);
+  cursor: pointer;
+  z-index: 2147483646;
+}
+.libre-cr-reopen:hover { background: #f6f8fa; }
 .libre-cr-shell {
   position: fixed;
   top: 80px;

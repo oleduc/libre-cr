@@ -7,6 +7,7 @@ import { createElement } from "react";
 
 import { ContentApp } from "../../components/ContentApp";
 import { isPullRequestPage } from "../../utils/github/detect";
+import { installEffectStyles } from "../../utils/presentation/page-styles";
 
 export default defineContentScript({
   matches: ["*://github.com/*/pull/*"],
@@ -38,6 +39,8 @@ export default defineContentScript({
       host.id = "libre-cr-root";
       // Avoid being affected by GitHub's CSS.
       host.style.all = "initial";
+      // Highlights/annotations land on GitHub's rows, outside the shadow root.
+      installEffectStyles(document);
       const shadow = host.attachShadow({ mode: "open" });
       // Keystrokes inside the panel bubble to `document` retargeted to this
       // host <div>, so GitHub's hotkey handler sees a non-editable target and

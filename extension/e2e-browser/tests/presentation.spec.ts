@@ -162,7 +162,7 @@ test.describe("presentation tools", () => {
         const buttons = Array.from(
           sr?.querySelectorAll<HTMLButtonElement>(".libre-cr-footer button") ?? [],
         );
-        const clear = buttons.find((b) => b.textContent?.includes("Clear all"));
+        const clear = buttons.find((b) => b.textContent?.includes("Clear highlights"));
         clear?.click();
       });
 

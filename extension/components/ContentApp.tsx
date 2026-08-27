@@ -98,7 +98,19 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
     };
   }, [prUrl]);
 
-  if (!open) return null;
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="libre-cr-reopen"
+        title="Open Libre CR"
+        aria-label="Open Libre CR"
+        onClick={() => setOpen(true)}
+      >
+        CR
+      </button>
+    );
+  }
 
   return (
     <>
