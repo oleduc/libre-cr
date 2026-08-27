@@ -367,6 +367,15 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   33392`): raw text went straight into FTS5 `MATCH`, where `-` and `"` are
   syntax. Tokens are now individually quoted (`fts_query`). *Trigger: manual
   testing trace.*
+- **`scroll_to` and replay stepping didn't visibly scroll; Replay jumped to the
+  end.** `scrollIntoView({behavior: "smooth"})` is cancelled by any other scroll
+  or layout shift, and GitHub's virtualizer shifts layout as rows mount, so the
+  call "succeeded" and nothing moved. Now `scrollIntoViewSettled`: instant
+  scroll, re-check the row is in the viewport, retry up to 4×. Replay is a paced
+  tour (step, pause 1.8 s, step…; click again to stop) instead of applying
+  everything and landing on the last step. *Trigger: manual testing —
+  11-highlight walkthrough, `scroll_to` ok but no movement, "steps 7-8 and
+  nothing".*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

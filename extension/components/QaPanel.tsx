@@ -37,6 +37,31 @@ export function QaPanel(props: QaPanelProps) {
   /** Replay cursor into the current turn's presentation steps (-1 = none). */
   const [stepIndex, setStepIndex] = useState(-1);
   const [labelsVisible, setLabelsVisible] = useState(true);
+  const [touring, setTouring] = useState(false);
+  const tourRef = useRef<{ cancelled: boolean } | null>(null);
+
+  /** Walk every recorded step in order, pausing on each; a second click stops. */
+  const runTour = useCallback(async () => {
+    if (tourRef.current) {
+      tourRef.current.cancelled = true;
+      tourRef.current = null;
+      setTouring(false);
+      return;
+    }
+    const token = { cancelled: false };
+    tourRef.current = token;
+    setTouring(true);
+    const n = presentationRef.current.steps.length;
+    for (let i = 0; i < n && !token.cancelled; i++) {
+      setStepIndex(i);
+      await presentationRef.current.replayTo(i);
+      if (i < n - 1) await new Promise((r) => setTimeout(r, 1800));
+    }
+    if (tourRef.current === token) {
+      tourRef.current = null;
+      setTouring(false);
+    }
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -510,13 +535,10 @@ export function QaPanel(props: QaPanelProps) {
               ▶
             </button>
             <button
-              title="Re-apply every highlight and scroll from this answer"
-              onClick={() => {
-                setStepIndex(effects.steps - 1);
-                void presentationRef.current.replayTo();
-              }}
+              title={touring ? "Stop the tour" : "Tour every highlight from this answer, one at a time"}
+              onClick={() => void runTour()}
             >
-              Replay
+              {touring ? "Stop" : "Replay"}
             </button>
           </span>
         ) : null}

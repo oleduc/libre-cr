@@ -155,6 +155,27 @@ export async function ensureFileRendered(
   return false;
 }
 
+/**
+ * Scroll `el` into view and make sure it stayed there. A `smooth` scroll is
+ * cancelled by any other scroll or layout shift, and GitHub's virtualized diff
+ * shifts layout as rows mount — so scroll instantly, then re-check the
+ * element's position a few times and re-scroll if it moved.
+ */
+export async function scrollIntoViewSettled(
+  el: Element,
+  block: ScrollLogicalPosition = "center",
+): Promise<void> {
+  if (typeof el.scrollIntoView !== "function") return; // jsdom
+  const win = el.ownerDocument.defaultView;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    el.scrollIntoView({ behavior: "auto", block });
+    await new Promise((r) => setTimeout(r, 150));
+    const rect = el.getBoundingClientRect();
+    const vh = win?.innerHeight ?? 0;
+    if (!vh || (rect.top >= 0 && rect.bottom <= vh)) return;
+  }
+}
+
 /** Locate the `<tr>` for a given (file, line) — for highlight overlay. */
 export function findRow(
   file: string,

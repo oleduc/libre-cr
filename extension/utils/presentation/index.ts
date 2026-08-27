@@ -2,7 +2,7 @@
 // instantiates one of these per active session.
 
 import type { AskSession } from "../daemon/ws";
-import { findRow } from "../github/diff";
+import { findRow, scrollIntoViewSettled } from "../github/diff";
 import {
   PresentationContext,
   PresentationResult,
@@ -135,11 +135,8 @@ export function createPresentationManager(
       const current = state.steps[upTo];
       const line = current && (current.input.start_line ?? current.input.line);
       if (current && typeof current.input.file === "string" && typeof line === "number") {
-        try {
-          findRow(current.input.file, line, ctx.root)?.scrollIntoView({ behavior: "smooth", block: "center" });
-        } catch {
-          // jsdom
-        }
+        const row = findRow(current.input.file, line, ctx.root);
+        if (row) await scrollIntoViewSettled(row, "center");
       }
       fire();
     },

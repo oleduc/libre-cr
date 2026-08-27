@@ -3,7 +3,13 @@
 // All effects are tagged with `data-libre-cr-effect-id` and `data-libre-cr-tag`
 // for scoped removal. Annotation text uses `textContent`, never `innerHTML`.
 
-import { CODE_CELL_SEL, ensureFileRendered, fileContainer, findRow } from "../github/diff";
+import {
+  CODE_CELL_SEL,
+  ensureFileRendered,
+  fileContainer,
+  findRow,
+  scrollIntoViewSettled,
+} from "../github/diff";
 
 export type PresentationColor = "red" | "yellow" | "green" | "blue" | "purple";
 export type PresentationSeverity = "info" | "suggestion" | "warning" | "critical";
@@ -156,20 +162,12 @@ export function scrollTo(
     // No line: bring the file itself into view (line 1 is rarely in a hunk).
     const container = fileContainer(input.file, ctx.root);
     if (!container) return { ok: false, error: "file_not_in_view", message: `no diff rendered for ${input.file}` };
-    try {
-      container.scrollIntoView({ behavior: "smooth", block: "start" });
-    } catch {
-      // jsdom
-    }
+    void scrollIntoViewSettled(container, "start");
     return { ok: true, effect_id: ctx.nextEffectId() };
   }
   const row = findRow(input.file, input.line, ctx.root);
   if (!row) return { ok: false, error: "file_not_in_view", message: `no row ${input.file}:${input.line}` };
-  try {
-    row.scrollIntoView({ behavior: "smooth", block: "center" });
-  } catch {
-    // jsdom or older browsers
-  }
+  void scrollIntoViewSettled(row, "center");
   const effectId = ctx.nextEffectId();
   row.classList.add("libre-cr-flash");
   row.setAttribute("data-libre-cr-effect-id", effectId);
