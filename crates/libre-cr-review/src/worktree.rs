@@ -105,6 +105,11 @@ impl SessionStatusBoard {
     }
 }
 
+/// Deadline for the git-heavy code-daemon calls (`clone_repo`,
+/// `prepare_worktree`). A first clone of a large repo takes minutes; the
+/// default 10 s per-call timeout is for tool calls like `grep`.
+const GIT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// Inputs for one orchestration run.
 pub struct PrepareInputs {
     pub session_id: String,
@@ -153,9 +158,10 @@ pub async fn prepare_session(
         discover
     } else {
         match code
-            .call(
+            .call_with_timeout(
                 "clone_repo",
                 serde_json::json!({ "remote_url": remote_url }),
+                GIT_CALL_TIMEOUT,
             )
             .await
         {
@@ -187,7 +193,10 @@ pub async fn prepare_session(
         "repo_id": repo_id,
         "ref": input.pr_ref,
     });
-    let prep = match code.call("prepare_worktree", prep_input).await {
+    let prep = match code
+        .call_with_timeout("prepare_worktree", prep_input, GIT_CALL_TIMEOUT)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             let status = SessionStatus::failed(format!("prepare_worktree failed: {e}"));

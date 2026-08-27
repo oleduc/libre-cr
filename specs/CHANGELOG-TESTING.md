@@ -264,6 +264,13 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   the panel stops on `status.error` and shows it, and waits long enough for a
   first clone. *Trigger: manual testing Tier 3. Specs: 04 § Worktree
   orchestration; 05 § Content Script Lifecycle.*
+- **First clone of a real repo hit the 10 s code-daemon call timeout.**
+  `SpawnedClient` applied one `CALL_TIMEOUT` (10 s) to every call; a 300 MB
+  clone took longer, the review daemon reported "clone failed: code daemon
+  call timeout" while the clone completed underneath. **Fixed:**
+  `call_with_timeout` on the client trait; `clone_repo` / `prepare_worktree`
+  get 10 min, tool calls keep 10 s. *Trigger: manual testing Tier 3, private
+  repo. Specs: 04 § Worktree orchestration.*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

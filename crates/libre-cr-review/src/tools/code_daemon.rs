@@ -16,6 +16,18 @@ pub trait CodeDaemonClient: Send + Sync {
 
     /// Dispatch one tool call. The router injects `repo_path` before calling.
     async fn call(&self, name: &str, input: serde_json::Value) -> Result<serde_json::Value>;
+
+    /// As [`Self::call`], with a caller-chosen deadline for long git work
+    /// (`clone_repo`, `prepare_worktree`). The default ignores the deadline —
+    /// only the spawned client enforces one.
+    async fn call_with_timeout(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+        _deadline: std::time::Duration,
+    ) -> Result<serde_json::Value> {
+        self.call(name, input).await
+    }
 }
 
 /// Hand-written canned responses for the Phase 2 smoke flow.
