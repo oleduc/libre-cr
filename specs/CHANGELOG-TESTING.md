@@ -360,6 +360,7 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   (`#pair?endpoint=…&code=…&auto=1`) once the extension origin is known, a
   fixed default port so the endpoint never needs typing, or an inverted flow
   where the extension requests and the CLI approves — no code to copy at all.
+  Interim: `libre-cr pair` now requests the 15-minute maximum TTL.
   *Trigger: manual testing — pairing said "unauthorized" on an expired code.*
 - **`MockProvider` / `MockCodeDaemonClient` fallback in production is silent.** A
   misconfigured install can get fake answers with no warning. *(round-1 suggestion;
