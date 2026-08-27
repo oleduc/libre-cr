@@ -80,8 +80,8 @@ impl OpenAICompatProvider {
     }
 
     pub fn with_endpoint(mut self, endpoint: String) -> Self {
-        if !endpoint.is_empty() {
-            self.endpoint = endpoint;
+        if !endpoint.trim().is_empty() {
+            self.endpoint = super::normalize_endpoint(&endpoint, "/chat/completions");
         }
         self
     }
@@ -547,6 +547,23 @@ mod tests {
             }
             other => panic!("expected Done, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn with_endpoint_accepts_base_url_or_full_path() {
+        // OpenRouter-style base URL (trailing slash tolerated) → full path, and
+        // the models URL derives from it correctly.
+        let p = OpenAICompatProvider::new("k".into(), "m".into(), 10, 0.0)
+            .with_endpoint("https://openrouter.ai/api/v1/".into());
+        assert_eq!(p.endpoint, "https://openrouter.ai/api/v1/chat/completions");
+        assert_eq!(
+            models_url_from_endpoint(&p.endpoint),
+            "https://openrouter.ai/api/v1/models"
+        );
+        // A full path is left alone.
+        let p = OpenAICompatProvider::new("k".into(), "m".into(), 10, 0.0)
+            .with_endpoint("http://127.0.0.1:11434/v1/chat/completions".into());
+        assert_eq!(p.endpoint, "http://127.0.0.1:11434/v1/chat/completions");
     }
 
     #[test]

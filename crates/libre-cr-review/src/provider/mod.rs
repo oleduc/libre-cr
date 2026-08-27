@@ -111,6 +111,19 @@ pub trait Provider: Send + Sync {
     }
 }
 
+/// Accept either a provider *base* URL (`https://host/v1`, what every
+/// OpenAI-compatible service documents and what our docs promise) or the full
+/// request URL. A base ending in `/v1` gets `path` appended; anything else is
+/// used verbatim.
+pub(crate) fn normalize_endpoint(endpoint: &str, path: &str) -> String {
+    let e = endpoint.trim().trim_end_matches('/');
+    if e.ends_with("/v1") {
+        format!("{e}{path}")
+    } else {
+        e.to_string()
+    }
+}
+
 /// Resolve the effective API key: the stored (decrypted) key always wins;
 /// when it is empty we fall back to the standard ambient environment variable
 /// for the provider kind (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`). This lets a

@@ -85,8 +85,8 @@ impl AnthropicProvider {
     }
 
     pub fn with_endpoint(mut self, endpoint: String) -> Self {
-        if !endpoint.is_empty() {
-            self.endpoint = endpoint;
+        if !endpoint.trim().is_empty() {
+            self.endpoint = super::normalize_endpoint(&endpoint, "/messages");
         }
         self
     }

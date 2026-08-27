@@ -67,7 +67,7 @@ The config UI detects these variables: if the selected provider has one set in t
 | `model` | `"mock-model"` | Model name sent to the provider (e.g. `claude-sonnet-4-20250514`, `gpt-4o`, `llama3.1`) |
 | `max_tokens` | `4096` | Per-response output token cap |
 | `temperature` | `0.0` | Sampling temperature |
-| `endpoint` | `""` | Override the provider's base URL (blank = provider default). Required for Ollama and other self-hosted endpoints |
+| `endpoint` | `""` | Override the provider URL (blank = provider default). Either the base URL ending in `/v1` (e.g. `https://openrouter.ai/api/v1`, `http://127.0.0.1:11434/v1`) or the full request URL (`…/v1/chat/completions`, `…/v1/messages`). Required for OpenRouter, Ollama and other non-default endpoints |
 | `api_key_enc` | `""` | Your API key, **encrypted at rest** with the install key. Do not hand-edit — set the key through the config UI (or `POST /v1/config` with a plaintext `provider.api_key`, which the daemon encrypts before writing). When left blank, the daemon falls back to the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variable for the provider kind (see [Detected credentials](#detected-credentials-and-the-env-var-fallback)) |
 
 #### Anthropic
