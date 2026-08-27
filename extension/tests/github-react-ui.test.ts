@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from "vitest";
 
-import { enumerateDiffLines, findRow, hitTestLine } from "../utils/github/diff";
+import { enumerateDiffLines, ensureFileRendered, findRow, hitTestLine } from "../utils/github/diff";
 import { scrapePr } from "../utils/github/scrape";
 
 // Trimmed from a live github.com/<owner>/<repo>/pull/<n>/changes page (the
@@ -64,5 +64,23 @@ describe("GitHub React 'changes' UI", () => {
     expect(row.textContent).toContain("0.4.18");
     expect(findRow("crates/globset/Cargo.toml", 35)?.textContent).toContain("regex-automata");
     expect(findRow("nope.rs", 35)).toBeNull();
+  });
+
+  it("forces a virtualized file to render before targeting it", async () => {
+    document.body.innerHTML = `
+      <h3 id="heading-x">\u200eCargo.lock\u200e</h3>
+      <div id="diff-abc" role="region" aria-labelledby="heading-x" data-estimated-height="4067"></div>`;
+    const region = document.getElementById("diff-abc")!;
+    // jsdom has no scrollIntoView; GitHub mounts the table once the region is scrolled to.
+    (region as unknown as { scrollIntoView: () => void }).scrollIntoView = () => {
+      setTimeout(() => {
+        region.innerHTML =
+          '<table aria-label="Diff for: Cargo.lock"><tr class="diff-line-row"><td data-diff-side="right" data-line-number="3">3</td></tr></table>';
+      }, 50);
+    };
+    expect(findRow("Cargo.lock", 3)).toBeNull();
+    expect(await ensureFileRendered("Cargo.lock")).toBe(true);
+    expect(findRow("Cargo.lock", 3)).not.toBeNull();
+    expect(await ensureFileRendered("nope.txt")).toBe(false);
   });
 });

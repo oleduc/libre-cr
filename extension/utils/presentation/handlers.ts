@@ -3,7 +3,7 @@
 // All effects are tagged with `data-libre-cr-effect-id` and `data-libre-cr-tag`
 // for scoped removal. Annotation text uses `textContent`, never `innerHTML`.
 
-import { findRow } from "../github/diff";
+import { ensureFileRendered, fileContainer, findRow } from "../github/diff";
 
 export type PresentationColor = "red" | "yellow" | "green" | "blue" | "purple";
 export type PresentationSeverity = "info" | "suggestion" | "warning" | "critical";
@@ -139,9 +139,19 @@ export function scrollTo(
   input: { file: string; line?: number },
 ): PresentationResult {
   if (!input?.file) return { ok: false, error: "validation_failed" };
-  const line = typeof input.line === "number" ? input.line : 1;
-  const row = findRow(input.file, line, ctx.root);
-  if (!row) return { ok: false, error: "file_not_in_view" };
+  if (typeof input.line !== "number") {
+    // No line: bring the file itself into view (line 1 is rarely in a hunk).
+    const container = fileContainer(input.file, ctx.root);
+    if (!container) return { ok: false, error: "file_not_in_view", message: `no diff rendered for ${input.file}` };
+    try {
+      container.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch {
+      // jsdom
+    }
+    return { ok: true, effect_id: ctx.nextEffectId() };
+  }
+  const row = findRow(input.file, input.line, ctx.root);
+  if (!row) return { ok: false, error: "file_not_in_view", message: `no row ${input.file}:${input.line}` };
   try {
     row.scrollIntoView({ behavior: "smooth", block: "center" });
   } catch {
@@ -232,11 +242,18 @@ export function isSafeUrl(u: string): boolean {
 }
 
 /** Single dispatch entry point. */
-export function dispatchPresentationCall(
+export async function dispatchPresentationCall(
   ctx: PresentationContext,
   tool: string,
   input: Record<string, unknown>,
-): PresentationResult {
+): Promise<PresentationResult> {
+  // GitHub virtualizes the diff; give the target file a chance to mount first.
+  if (
+    typeof input?.file === "string" &&
+    (tool === "highlight_lines" || tool === "annotate_line" || tool === "scroll_to")
+  ) {
+    await ensureFileRendered(input.file, ctx.root);
+  }
   switch (tool) {
     case "highlight_lines":
       return highlightLines(ctx, input as Parameters<typeof highlightLines>[1]);

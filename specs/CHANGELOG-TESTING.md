@@ -300,8 +300,13 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   alone. Tool descriptions now tell the model when to highlight, that lines are
   NEW-side numbers, that `scroll_to` needs a line inside a hunk, and that
   `get_pr_diff` is normally empty (the extension never scraped hunks) so it
-  should use `git_diff` on the worktree. Still open: forcing GitHub to render a
-  file (scroll the placeholder into view, then retry) before highlighting.
+  should use `git_diff` on the worktree. **Then fixed for real:** traces showed
+  every failure was one file (`cdk/lib/cdk-stack.ts` → `file_not_in_view`)
+  while highlights on rendered files succeeded. The extension now forces
+  GitHub to mount a file before targeting it (`ensureFileRendered`: scroll the
+  file's placeholder region / click its file-tree link, wait for rows);
+  `scroll_to` without a line scrolls to the file header; the prompt tells the
+  model to continue past a file that can't be shown.
   *Trigger: manual testing Tier 3 — "scroll to top, no highlights".*
 - **Reloading the extension orphans open tabs' content scripts** — the panel
   shows "Extension context invalidated" and every call fails until the page is

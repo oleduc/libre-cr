@@ -78,7 +78,9 @@ fn build_system_prompt(
              in the browser: highlight_lines, annotate_line, scroll_to, \
              open_link, clear_presentation. Use them sparingly to amplify your \
              answer when they help the reviewer follow it. The answer text \
-             remains primary.",
+             remains primary. If a presentation call fails for one file \
+             (e.g. file_not_in_view), say so briefly and continue with the \
+             others — never abandon the rest of the walkthrough over it.",
         );
     }
     if let Some(v) = verb {

@@ -5,6 +5,7 @@ import type { AskSession } from "../daemon/ws";
 import {
   PresentationContext,
   PresentationResult,
+  clearPresentation,
   dispatchPresentationCall,
   makeContext,
 } from "./handlers";
@@ -62,12 +63,12 @@ export function createPresentationManager(
     for (const h of onChange) h(manager);
   };
 
-  const handle = (
+  const handle = async (
     session: AskSession,
     tool: string,
     call_id: string,
     input: Record<string, unknown>,
-  ): void => {
+  ): Promise<void> => {
     if (state.muted) {
       // Defense in depth: even if the daemon ignores `mute_presentations`
       // and still emits presentation tools, never touch the page DOM while
@@ -83,7 +84,7 @@ export function createPresentationManager(
     }
     let outcome: PresentationResult;
     try {
-      outcome = dispatchPresentationCall(ctx, tool, input);
+      outcome = await dispatchPresentationCall(ctx, tool, input);
     } catch (e) {
       outcome = {
         ok: false,
@@ -110,13 +111,13 @@ export function createPresentationManager(
     },
     attach(session: AskSession) {
       const off = session.on("presentation_call", (frame) => {
-        handle(session, frame.tool, frame.call_id, frame.input ?? {});
+        void handle(session, frame.tool, frame.call_id, frame.input ?? {});
       });
       state.detachers.push(off);
       return off;
     },
     clearAll() {
-      dispatchPresentationCall(ctx, "clear_presentation", { scope: "all" });
+      clearPresentation(ctx, "all");
       state.effects.length = 0;
       fire();
     },

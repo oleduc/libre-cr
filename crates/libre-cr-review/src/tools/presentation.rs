@@ -24,7 +24,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "highlight_lines".into(),
-            description: "Highlight a range of lines in the PR diff shown in the browser. Use this whenever the reviewer asks you to point out, show, mark or highlight code. Line numbers are NEW-side (right/after) numbers of the PR head; for deleted lines use the OLD-side number. Only rows GitHub has rendered can be highlighted — call scroll_to on the file first if in doubt.".into(),
+            description: "Highlight a range of lines in the PR diff shown in the browser. Use this whenever the reviewer asks you to point out, show, mark or highlight code. Line numbers are NEW-side (right/after) numbers of the PR head; for deleted lines use the OLD-side number. Works for any file in the PR diff (the browser scrolls the file into view if needed).".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -56,7 +56,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "scroll_to".into(),
-            description: "Scroll the browser diff to a file and (optionally) a NEW-side line number, flashing the row. Omitting line targets line 1, which usually is not part of the diff — pass a line that appears in the hunk.".into(),
+            description: "Scroll the browser diff to a file, or to a NEW-side line number within it (flashing the row). Without a line it scrolls to the file header.".into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties": {
@@ -68,7 +68,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "open_link".into(),
-            description: "Open a URL.".into(),
+            description: "Open an http(s) URL in a new tab. Not for local files.".into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties": {

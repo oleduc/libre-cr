@@ -106,15 +106,62 @@ export function hitTestLine(node: Node | null): DiffLineRef | null {
   return null;
 }
 
+/** The rendered diff container for `file`, if GitHub has mounted it. */
+export function fileContainer(file: string, root: ParentNode = globalThis.document): HTMLElement | null {
+  return (
+    Array.from(root.querySelectorAll<HTMLElement>(FILE_CONTAINER_SEL)).find(
+      (el) => filePathOf(el) === file,
+    ) ?? null
+  );
+}
+
+const BIDI_MARKS = /[\u200e\u200f]/g;
+
+/**
+ * Make GitHub render `file`'s diff. The React "changes" UI virtualizes: files
+ * away from the viewport are placeholder regions (`[id^="diff-"][role="region"]`
+ * whose heading is the path) with no rows, so effects targeting them fail with
+ * `file_not_in_view`. Scrolling the placeholder (or clicking the file-tree
+ * link) into view makes GitHub mount the table; we then wait for it.
+ * Resolves `true` when rows exist. Classic DOM: always already rendered.
+ */
+export async function ensureFileRendered(
+  file: string,
+  root: Document = globalThis.document,
+): Promise<boolean> {
+  if (fileContainer(file, root)) return true;
+  const textOf = (el: Element | null) => el?.textContent?.replace(BIDI_MARKS, "").trim() ?? "";
+  const region = Array.from(
+    root.querySelectorAll<HTMLElement>('[id^="diff-"][role="region"]'),
+  ).find((r) => {
+    const heading = r.getAttribute("aria-labelledby");
+    return !!heading && textOf(root.getElementById(heading)) === file;
+  });
+  const treeLink = region
+    ? null
+    : Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="#diff-"]')).find(
+        (a) => textOf(a) === file,
+      );
+  if (!region && !treeLink) return false;
+  // ponytail: this moves the reviewer's viewport to the file; acceptable for a
+  // companion that is about to point at it anyway.
+  if (region) region.scrollIntoView({ block: "start" });
+  else treeLink!.click();
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 120));
+    if (fileContainer(file, root)) return true;
+  }
+  return false;
+}
+
 /** Locate the `<tr>` for a given (file, line) — for highlight overlay. */
 export function findRow(
   file: string,
   line: number,
   root: ParentNode = globalThis.document,
 ): HTMLTableRowElement | null {
-  const fileEl = Array.from(root.querySelectorAll<HTMLElement>(FILE_CONTAINER_SEL)).find(
-    (el) => filePathOf(el) === file,
-  );
+  const fileEl = fileContainer(file, root);
   if (!fileEl) return null;
   const cells = Array.from(
     fileEl.querySelectorAll<HTMLTableCellElement>(`td[data-line-number="${line}"]`),
