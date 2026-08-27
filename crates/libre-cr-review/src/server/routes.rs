@@ -20,7 +20,7 @@ use libre_cr_common::{Selection, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::error::{Error, Result};
 use crate::storage::Severity;
@@ -56,16 +56,13 @@ pub struct ListenInfo {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    // Dynamic CORS (N3): the predicate reads the live allowlist on every
-    // request, so an origin learned via `/v1/pair` works without a daemon
-    // restart. Empty allowlist → allow nothing on CORS preflight; same-
-    // origin / non-browser callers (curl, tests) aren't affected.
-    let allowed_origin = state.allowed_origin.clone();
+    // CORS is wide open on purpose. The bearer token is the security boundary;
+    // an origin allowlist buys nothing here and broke the content script, whose
+    // fetches carry the *page* origin (https://github.com) under MV3, not the
+    // extension's. The unauthenticated routes (/v1/health, rate-limited
+    // /v1/pair) are reachable by anything on the machine via curl anyway.
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(move |origin, _| {
-            let allowed = allowed_origin.read().map(|g| g.clone()).unwrap_or_default();
-            !allowed.is_empty() && origin.as_bytes() == allowed.as_bytes()
-        }))
+        .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
@@ -593,16 +590,12 @@ async fn pair(
         }
     }
     if let Some(origin) = body.extension_origin.clone() {
-        // N3: the learned origin must survive a daemon restart and take
-        // effect on the in-process CORS layer immediately.
+        // Persisted for bookkeeping / diagnostics only; CORS no longer keys on it.
         let snapshot = {
             let mut cfg = state.config.0.lock().await;
-            cfg.server.extension_origin = origin.clone();
+            cfg.server.extension_origin = origin;
             cfg.clone()
         };
-        if let Ok(mut g) = state.allowed_origin.write() {
-            *g = origin;
-        }
         if let Some(path) = state.config_path.as_ref() {
             // Best-effort: the pairing itself succeeded; a failed write only
             // costs persistence across restarts.

@@ -414,37 +414,3 @@ async fn pair_redeem_rate_limited_after_five_failures() {
         .unwrap_or("");
     assert_eq!(retry_after, "60");
 }
-
-#[tokio::test]
-async fn origin_check_when_configured() {
-    let h = common::start_server_default().await;
-    // First pair to register an extension origin
-    let code = h.pairing.issue().await;
-    let c = reqwest::Client::new();
-    let _ = c
-        .post(url(h.addr, "/v1/pair"))
-        .json(&json!({"code": code, "extension_origin": "chrome-extension://abc"}))
-        .send()
-        .await
-        .unwrap();
-    // Now a session with a wrong origin should be rejected.
-    let resp = c
-        .post(url(h.addr, "/v1/sessions"))
-        .bearer_auth(&h.token)
-        .header("Origin", "https://evil.example")
-        .json(&json!({"pr_url":"https://github.com/a/b/pull/9","pr_data":{}}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 403);
-    // With the right origin, it succeeds.
-    let resp = c
-        .post(url(h.addr, "/v1/sessions"))
-        .bearer_auth(&h.token)
-        .header("Origin", "chrome-extension://abc")
-        .json(&json!({"pr_url":"https://github.com/a/b/pull/9","pr_data":{}}))
-        .send()
-        .await
-        .unwrap();
-    assert!(resp.status().is_success());
-}

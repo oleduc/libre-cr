@@ -71,9 +71,6 @@ pub struct AppState {
     pub code_daemon: Arc<dyn CodeDaemonClient>,
     pub token: String,
     pub extension_origin: String,
-    /// Live CORS allowlist: updated when `/v1/pair` learns a new origin so
-    /// the `AllowOrigin::predicate` built at startup reads current state.
-    pub allowed_origin: Arc<std::sync::RwLock<String>>,
     pub install_key: Arc<InstallKey>,
     pub pairing: PairingStore,
     /// Sessions with an in-flight ask (single-flight per session).
@@ -107,7 +104,6 @@ impl AppStateBuilder {
             provider: ProviderHandle::new(self.provider),
             code_daemon: self.code_daemon,
             token: self.token,
-            allowed_origin: Arc::new(std::sync::RwLock::new(self.extension_origin.clone())),
             extension_origin: self.extension_origin,
             install_key: self.install_key,
             pairing: PairingStore::new(),

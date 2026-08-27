@@ -187,9 +187,11 @@ async fn config_post_rejects_unknown_provider_kind() {
 }
 
 #[tokio::test]
-async fn pair_persists_origin_and_cors_allows_it_without_restart() {
-    // N3: the origin learned via /v1/pair lands in review.toml and the CORS
-    // layer honors it immediately.
+async fn pair_persists_origin_and_cors_is_permissive() {
+    // N3 (revised): the origin learned via /v1/pair still lands in review.toml
+    // for diagnostics, but CORS is `*` — the content script's fetches carry
+    // the page origin under MV3, so an allowlist can't work; the bearer token
+    // is the boundary.
     let tmp = tempfile::tempdir().unwrap();
     let cfg_path = tmp.path().join("review.toml");
     let mut cfg = Config::default();
@@ -204,18 +206,6 @@ async fn pair_persists_origin_and_cors_allows_it_without_restart() {
     let c = reqwest::Client::new();
     let origin = "chrome-extension://abcdefgh";
 
-    // Before pairing: no CORS allowance for the origin.
-    let resp = c
-        .get(url(h.addr, "/v1/health"))
-        .header("Origin", origin)
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        resp.headers().get("access-control-allow-origin").is_none(),
-        "no origin should be allowed before pairing"
-    );
-
     let code = h.pairing.issue().await;
     let resp = c
         .post(url(h.addr, "/v1/pair"))
@@ -225,28 +215,22 @@ async fn pair_persists_origin_and_cors_allows_it_without_restart() {
         .unwrap();
     assert!(resp.status().is_success());
 
-    // CORS picks the new origin up without a restart.
-    let resp = c
-        .get(url(h.addr, "/v1/health"))
-        .header("Origin", origin)
-        .send()
-        .await
-        .unwrap();
-    let acao = resp
-        .headers()
-        .get("access-control-allow-origin")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert_eq!(acao, origin, "paired origin must pass CORS immediately");
-
-    // A different origin still gets nothing.
-    let resp = c
-        .get(url(h.addr, "/v1/health"))
-        .header("Origin", "https://evil.example")
-        .send()
-        .await
-        .unwrap();
-    assert!(resp.headers().get("access-control-allow-origin").is_none());
+    // Any origin — the page origin a content script actually sends included —
+    // gets a wildcard allowance.
+    for o in [origin, "https://github.com"] {
+        let resp = c
+            .get(url(h.addr, "/v1/health"))
+            .header("Origin", o)
+            .send()
+            .await
+            .unwrap();
+        let acao = resp
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(acao, "*", "CORS must be permissive for {o}");
+    }
 
     // And the origin survives on disk.
     let reloaded = Config::load(&cfg_path).unwrap();

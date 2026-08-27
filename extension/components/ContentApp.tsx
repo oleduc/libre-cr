@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { DaemonClient, DaemonError } from "../utils/daemon/client";
+import { daemonFetch } from "../utils/daemon/proxy";
 import { getDaemonAuth } from "../utils/daemon/storage";
 import { scrapePr } from "../utils/github/scrape";
 import type { Selection } from "../utils/selection";
@@ -46,7 +47,10 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
         setState({ status: "not_paired", warnings: [] });
         return;
       }
-      const c = new DaemonClient({ endpoint: auth.endpoint, token: auth.token });
+      const c = new DaemonClient(
+        { endpoint: auth.endpoint, token: auth.token },
+        { fetch: daemonFetch() },
+      );
       setClient(c);
       const scrape = scrapePr();
       if (scrape.data.owner && scrape.data.repo && scrape.data.number) {

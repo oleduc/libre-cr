@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="en">
   <head>
+  <!-- Mirrors github.com: connect-src excludes 127.0.0.1, so the content script must relay via the background worker. -->
+  <meta http-equiv="Content-Security-Policy" content="connect-src 'self'">
     <meta charset="utf-8" />
     <title>foo/bar · Pull Request #1 — Libre CR fixture</title>
     <meta

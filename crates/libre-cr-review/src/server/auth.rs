@@ -35,14 +35,6 @@ pub async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
     check_token(headers, query, is_ws_upgrade, &state.token).map_err(|_| Error::Unauthorized)?;
-    // Origin allowlist may change at runtime via /v1/pair; read fresh.
-    let allowed = state.config.snapshot().await.server.extension_origin;
-    let allowed_str = if allowed.is_empty() {
-        state.extension_origin.clone()
-    } else {
-        allowed
-    };
-    check_origin(headers, &allowed_str).map_err(|_| Error::OriginRejected)?;
     Ok(next.run(req).await)
 }
 
@@ -105,26 +97,6 @@ fn token_from_query(query: &str) -> Option<String> {
     None
 }
 
-fn check_origin(headers: &HeaderMap, allowed: &str) -> std::result::Result<(), StatusCode> {
-    // If no origin allowlist is configured, accept anything once we have a
-    // valid token (covers `curl`, internal tests, MCP-CLI). The extension
-    // origin only kicks in once paired.
-    if allowed.is_empty() {
-        return Ok(());
-    }
-    let origin = headers
-        .get("origin")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if origin.is_empty() {
-        return Ok(());
-    }
-    if origin == allowed {
-        return Ok(());
-    }
-    Err(StatusCode::FORBIDDEN)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,25 +138,5 @@ mod tests {
         );
         assert_eq!(token_from_query("a=1&b=2").as_deref(), None);
         assert_eq!(token_from_query("").as_deref(), None);
-    }
-
-    #[test]
-    fn origin_allowed_when_unconfigured() {
-        let h = HeaderMap::new();
-        assert!(check_origin(&h, "").is_ok());
-    }
-
-    #[test]
-    fn origin_rejected_on_mismatch() {
-        let mut h = HeaderMap::new();
-        h.insert("origin", HeaderValue::from_static("https://evil"));
-        assert!(check_origin(&h, "chrome-extension://x").is_err());
-    }
-
-    #[test]
-    fn origin_accepted_on_match() {
-        let mut h = HeaderMap::new();
-        h.insert("origin", HeaderValue::from_static("chrome-extension://x"));
-        assert!(check_origin(&h, "chrome-extension://x").is_ok());
     }
 }

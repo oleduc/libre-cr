@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { DaemonClient } from "../utils/daemon/client";
+import { daemonWsFactory } from "../utils/daemon/proxy";
 import { AskSession } from "../utils/daemon/ws";
 import type { VerbDescriptor } from "../utils/daemon/frames";
 import { getKey, setKey } from "../utils/daemon/storage";
@@ -174,6 +175,7 @@ export function QaPanel(props: QaPanelProps) {
         props.client.auth.endpoint,
         props.client.auth.token,
         props.sessionId,
+        { wsFactory: daemonWsFactory() },
       );
       presentationRef.current.attach(session);
       session.on("text_delta", (f) => {
