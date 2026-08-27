@@ -307,6 +307,18 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   shows "Extension context invalidated" and every call fails until the page is
   reloaded. Should detect `runtime` loss and show "reload this page".
   *Trigger: manual testing (dev loop).*
+- **The model went repo-hunting and called `clone_repo` itself.** With
+  `get_pr_diff` always empty and no hint of where the checkout was, a turn ran
+  `discover_repo` → `scan_for_repos` → `clone_repo` with a guessed URL, which
+  failed on the private repo, and the answer degraded to "I don't have access
+  to the diff". **Fixed:** worktree-management tools (`clone_repo`,
+  `discover_repo`, `scan_for_repos`, `prepare_worktree`, `list_worktrees`,
+  `remove_worktree`) are no longer offered to the model and are refused if
+  called; `get_pr_diff` is computed by the router via `git_diff
+  origin/<base>..HEAD` on the session worktree (optional `paths`); the system
+  prompt states the checkout path and base branch and that code tools already
+  operate there. *Trigger: manual testing Tier 3. Specs: 04 § Agent Loop,
+  § Tool Composition.*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

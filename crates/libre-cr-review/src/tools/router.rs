@@ -25,6 +25,19 @@ pub struct ToolOutcome {
     pub duration_ms: i64,
 }
 
+/// Code-daemon tools the review daemon drives itself (worktree orchestration)
+/// and therefore never offers to the model. Left visible, the model went
+/// repo-hunting when `get_pr_diff` looked empty — `scan_for_repos`, then a
+/// `clone_repo` with a guessed URL that failed on a private repo.
+const AGENT_HIDDEN_CODE_TOOLS: &[&str] = &[
+    "prepare_worktree",
+    "list_worktrees",
+    "remove_worktree",
+    "discover_repo",
+    "scan_for_repos",
+    "clone_repo",
+];
+
 pub struct ToolRouter {
     code: Arc<dyn CodeDaemonClient>,
     internal: InternalContext,
@@ -62,7 +75,12 @@ impl ToolRouter {
     }
 
     pub fn tools_for_verb(&self, _verb: Option<&str>) -> Vec<ToolSchema> {
-        let mut out = self.code_schemas.clone();
+        let mut out: Vec<ToolSchema> = self
+            .code_schemas
+            .iter()
+            .filter(|t| !AGENT_HIDDEN_CODE_TOOLS.contains(&t.name.as_str()))
+            .cloned()
+            .collect();
         out.extend(internal_tool_schemas());
         if self.presentation.is_some() {
             out.extend(presentation_tool_schemas());
@@ -102,7 +120,45 @@ impl ToolRouter {
         }
     }
 
+    /// `origin/<base_branch>` of the PR, when the scrape captured one.
+    pub fn base_ref(&self) -> Option<String> {
+        self.internal
+            .pr_data
+            .get("base_branch")
+            .and_then(|v| v.as_str())
+            .filter(|b| !b.is_empty())
+            .map(|b| format!("origin/{b}"))
+    }
+
+    /// `get_pr_diff` computed on the prepared worktree: the extension never
+    /// scraped hunks, so the honest source is `git_diff` base → PR head.
+    /// Falls back to the (empty) scraped payload when there is no worktree.
+    async fn pr_diff(&self, input: &serde_json::Value) -> Result<serde_json::Value> {
+        let (Some(path), Some(base)) = (&self.worktree_path, self.base_ref()) else {
+            return self.internal.call("get_pr_diff", input.clone()).await;
+        };
+        let mut args = serde_json::json!({
+            "repo_path": path,
+            "from_ref": base,   // ponytail: two-dot diff; base drift since clone is negligible
+            "to_ref": "HEAD",
+        });
+        if let Some(paths) = input.get("paths") {
+            args["paths"] = paths.clone();
+        }
+        self.code.call("git_diff", args).await
+    }
+
     async fn dispatch_inner(&self, call: &ToolCall) -> Result<serde_json::Value> {
+        if call.name == "get_pr_diff" {
+            return self.pr_diff(&call.input).await;
+        }
+        if AGENT_HIDDEN_CODE_TOOLS.contains(&call.name.as_str()) {
+            return Err(Error::Validation(format!(
+                "tool '{}' is managed by the review daemon and not available here; \
+                 the PR is already checked out — use the code tools directly",
+                call.name
+            )));
+        }
         match self.category(&call.name) {
             Category::Internal => self.internal.call(&call.name, call.input.clone()).await,
             Category::CodeDaemon => {
@@ -377,5 +433,78 @@ mod tests {
             })
             .await;
         assert!(!out.ok);
+    }
+
+    #[tokio::test]
+    async fn hides_repo_management_tools_and_serves_pr_diff_from_worktree() {
+        use std::sync::Mutex as StdMutex;
+        struct Recorder(StdMutex<Vec<(String, serde_json::Value)>>);
+        #[async_trait::async_trait]
+        impl CodeDaemonClient for Recorder {
+            async fn list_tools(&self) -> crate::error::Result<Vec<ToolSchema>> {
+                Ok(["grep", "clone_repo", "scan_for_repos", "git_diff"]
+                    .iter()
+                    .map(|n| ToolSchema {
+                        name: (*n).into(),
+                        description: String::new(),
+                        input_schema: serde_json::json!({"type":"object","properties":{"repo_path":{"type":"string"}}}),
+                    })
+                    .collect())
+            }
+            async fn call(
+                &self,
+                name: &str,
+                input: serde_json::Value,
+            ) -> crate::error::Result<serde_json::Value> {
+                self.0.lock().unwrap().push((name.to_string(), input));
+                Ok(serde_json::json!({"files": [{"path": "a.rs"}]}))
+            }
+        }
+        let rec = Arc::new(Recorder(StdMutex::new(vec![])));
+        let schemas = rec.list_tools().await.unwrap();
+        let internal = InternalContext {
+            session_id: "s".into(),
+            pr_data: serde_json::json!({"base_branch": "main"}),
+            selection: None,
+            store: crate::storage::Store::open_in_memory().unwrap(),
+        };
+        let router = ToolRouter::new(rec.clone(), schemas, internal, Some("/wt".into()));
+
+        let offered: Vec<String> = router
+            .tools_for_verb(None)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(offered.contains(&"grep".to_string()));
+        assert!(!offered
+            .iter()
+            .any(|n| n == "clone_repo" || n == "scan_for_repos"));
+
+        let out = router
+            .dispatch(&ToolCall {
+                id: "c1".into(),
+                name: "get_pr_diff".into(),
+                input: serde_json::json!({"paths": ["a.rs"]}),
+            })
+            .await;
+        assert!(out.ok, "{out:?}");
+        {
+            let calls = rec.0.lock().unwrap();
+            let (name, args) = &calls[0];
+            assert_eq!(name, "git_diff");
+            assert_eq!(args["repo_path"], "/wt");
+            assert_eq!(args["from_ref"], "origin/main");
+            assert_eq!(args["to_ref"], "HEAD");
+            assert_eq!(args["paths"][0], "a.rs");
+        }
+
+        let refused = router
+            .dispatch(&ToolCall {
+                id: "c2".into(),
+                name: "clone_repo".into(),
+                input: serde_json::json!({"remote_url": "x"}),
+            })
+            .await;
+        assert!(!refused.ok);
     }
 }

@@ -46,13 +46,32 @@ pub struct TurnResult {
     pub wall_ms: u64,
 }
 
-fn build_system_prompt(global: &str, verb: Option<&str>, has_presentation: bool) -> Message {
+fn build_system_prompt(
+    global: &str,
+    verb: Option<&str>,
+    has_presentation: bool,
+    worktree: Option<&str>,
+    base_ref: Option<&str>,
+) -> Message {
     let mut s = String::new();
     s.push_str(
         "You are libre-cr's review assistant. The reviewer asks questions about \
          a specific pull request; you answer with grounded references to the \
          code. Prefer concise, structured answers.",
     );
+    if let Some(path) = worktree {
+        s.push_str(&format!(
+            "\n\nThe PR head is already checked out at `{path}`{}. All code tools \
+             (read_file, grep, git_diff, git_log, list_symbols, …) operate on that \
+             checkout automatically — you never need to clone, discover or prepare \
+             a repository. Use get_pr_diff for the PR's changes (pass `paths` to \
+             narrow it) and read_file/grep for surrounding context. Line numbers \
+             in the diff are the PR head's.",
+            base_ref
+                .map(|b| format!(" (base branch: `{b}`)"))
+                .unwrap_or_default()
+        ));
+    }
     if has_presentation {
         s.push_str(
             "\n\nYou have presentation tools that affect what the reviewer sees \
@@ -159,10 +178,13 @@ pub async fn run_turn(
         .iter()
         .any(|t| crate::tools::presentation::PRESENTATION_TOOL_NAMES.contains(&t.name.as_str()));
 
+    let base_ref = ctx.router.base_ref();
     let system = build_system_prompt(
         &ctx.global_instructions,
         input.verb.as_deref(),
         has_presentation,
+        ctx.router.worktree_path(),
+        base_ref.as_deref(),
     );
     let user_msg = build_user_message(&input.question, input.selection.as_ref());
 

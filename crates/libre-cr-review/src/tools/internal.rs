@@ -18,8 +18,14 @@ pub fn internal_tool_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "get_pr_diff".into(),
-            description: "Diff text scraped from the PR page, if the extension captured any — usually EMPTY. Prefer git_diff on the prepared worktree (PR head vs its base) for the actual changes.".into(),
-            input_schema: serde_json::json!({"type":"object","properties":{}}),
+            description: "The PR's changes (base branch → PR head) as structured per-file hunks, computed on the prepared checkout. Optional `paths` narrows it to specific files — do that for large PRs.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paths": {"type": "array", "items": {"type": "string"},
+                              "description": "Restrict to these file paths (as in the diff)."}
+                }
+            }),
         },
         ToolSchema {
             name: "get_pr_comments".into(),
