@@ -376,6 +376,14 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   everything and landing on the last step. *Trigger: manual testing —
   11-highlight walkthrough, `scroll_to` ok but no movement, "steps 7-8 and
   nothing".*
+- **Guided tour replaces timed replay.** Auto-paced replay was too fast and the
+  footer controls too small; relating a highlight to its explanation still
+  meant reading the transcript. `highlight_lines` gains `detail` (the model's
+  1–3 sentence explanation, required alongside `label` for walkthroughs); the
+  panel offers a **Tour (N)** button opening a floating widget (bottom-centre,
+  big Prev/Next, counter, title, file:line, explanation, Show all, close) that
+  shows one step at a time (`showStep`: clear → apply → verified scroll).
+  *Trigger: manual testing — "timing is brutal", "the AI's text should be there".*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

@@ -10,6 +10,7 @@ import type { Selection } from "../utils/selection";
 import { selectionLabel, selectionSatisfies } from "../utils/selection";
 import { ConversationTurn, type NoteSeverity, type Turn } from "./ConversationTurn";
 import { ExportModal } from "./ExportModal";
+import { TourWidget } from "./TourWidget";
 
 export interface QaPanelProps {
   client: DaemonClient;
@@ -37,30 +38,11 @@ export function QaPanel(props: QaPanelProps) {
   /** Replay cursor into the current turn's presentation steps (-1 = none). */
   const [stepIndex, setStepIndex] = useState(-1);
   const [labelsVisible, setLabelsVisible] = useState(true);
-  const [touring, setTouring] = useState(false);
-  const tourRef = useRef<{ cancelled: boolean } | null>(null);
-
-  /** Walk every recorded step in order, pausing on each; a second click stops. */
-  const runTour = useCallback(async () => {
-    if (tourRef.current) {
-      tourRef.current.cancelled = true;
-      tourRef.current = null;
-      setTouring(false);
-      return;
-    }
-    const token = { cancelled: false };
-    tourRef.current = token;
-    setTouring(true);
-    const n = presentationRef.current.steps.length;
-    for (let i = 0; i < n && !token.cancelled; i++) {
-      setStepIndex(i);
-      await presentationRef.current.replayTo(i);
-      if (i < n - 1) await new Promise((r) => setTimeout(r, 1800));
-    }
-    if (tourRef.current === token) {
-      tourRef.current = null;
-      setTouring(false);
-    }
+  const [tourOpen, setTourOpen] = useState(false);
+  const openTour = useCallback((i: number) => {
+    setTourOpen(true);
+    setStepIndex(i);
+    void presentationRef.current.showStep(i);
   }, []);
   const [error, setError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
@@ -190,6 +172,7 @@ export function QaPanel(props: QaPanelProps) {
       presentationRef.current.clearAll();
       presentationRef.current.resetSteps();
       setStepIndex(-1);
+      setTourOpen(false);
       const turnId = newTurnId();
       // Mark earlier qa turns collapsed.
       setTurns((all) =>
@@ -508,39 +491,14 @@ export function QaPanel(props: QaPanelProps) {
           {effects.annotations} annotation{effects.annotations === 1 ? "" : "s"}
         </span>
         {effects.steps > 0 ? (
-          <span className="libre-cr-steps" data-testid="presentation-steps">
-            <button
-              aria-label="Previous presentation step"
-              disabled={stepIndex <= 0}
-              onClick={() => {
-                const i = stepIndex - 1;
-                setStepIndex(i);
-                void presentationRef.current.replayTo(i);
-              }}
-            >
-              ◀
-            </button>
-            <span title="Step through what the assistant showed, in order">
-              {stepIndex < 0 ? "–" : stepIndex + 1}/{effects.steps}
-            </span>
-            <button
-              aria-label="Next presentation step"
-              disabled={stepIndex >= effects.steps - 1}
-              onClick={() => {
-                const i = stepIndex + 1;
-                setStepIndex(i);
-                void presentationRef.current.replayTo(i);
-              }}
-            >
-              ▶
-            </button>
-            <button
-              title={touring ? "Stop the tour" : "Tour every highlight from this answer, one at a time"}
-              onClick={() => void runTour()}
-            >
-              {touring ? "Stop" : "Replay"}
-            </button>
-          </span>
+          <button
+            className="primary"
+            data-testid="start-tour"
+            title="Step through what the assistant highlighted, with its explanation"
+            onClick={() => openTour(0)}
+          >
+            Tour ({effects.steps})
+          </button>
         ) : null}
         <button
           aria-pressed={labelsVisible}
@@ -561,6 +519,18 @@ export function QaPanel(props: QaPanelProps) {
         </button>
       </div>
       {error ? <div className="libre-cr-error">{error}</div> : null}
+      {tourOpen && effects.steps > 0 ? (
+        <TourWidget
+          steps={presentationRef.current.steps}
+          index={Math.max(0, stepIndex)}
+          onStep={openTour}
+          onShowAll={() => {
+            setStepIndex(effects.steps - 1);
+            void presentationRef.current.replayTo();
+          }}
+          onClose={() => setTourOpen(false)}
+        />
+      ) : null}
       {exportOpen ? (
         <ExportModal
           client={props.client}

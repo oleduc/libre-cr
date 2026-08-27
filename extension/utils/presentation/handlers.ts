@@ -68,6 +68,8 @@ export function highlightLines(
     end_line?: number;
     color?: PresentationColor;
     label?: string;
+    /** The model's explanation for this part; shown in the tour widget. */
+    detail?: string;
   },
 ): PresentationResult {
   if (!input?.file || typeof input.start_line !== "number") {

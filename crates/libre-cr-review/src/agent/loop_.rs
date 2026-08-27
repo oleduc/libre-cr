@@ -82,9 +82,11 @@ fn build_system_prompt(
              in the browser: highlight_lines, annotate_line, scroll_to, \
              open_link, clear_presentation. When the reviewer asks you to walk \
              through, point out, show or highlight parts of the PR, highlight \
-             each part you describe (highlight_lines with a short label that \
-             matches the heading you use in the answer, in the order you present \
-             them) — that is the expected deliverable, not an extra. Finish a \
+             each part you describe (highlight_lines with `label` = the heading \
+             you use in the answer and `detail` = your explanation of that part, \
+             in the order you present them) — that is the expected deliverable, \
+             not an extra; the reviewer steps through these highlights in a tour \
+             widget that shows label and detail beside the code. Finish a \
              walkthrough with scroll_to on the first highlighted part so the \
              reviewer starts where you started. For plain questions, use them only when they help. The \
              answer text remains primary. If a presentation call fails for one \

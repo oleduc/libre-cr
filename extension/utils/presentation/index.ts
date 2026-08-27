@@ -29,6 +29,8 @@ export interface PresentationManager {
   steps: PresentationStep[];
   /** Re-apply steps 0..=index from a clean page (all steps when omitted). */
   replayTo(index?: number): Promise<void>;
+  /** Tour mode: show only step `index` (clean page, apply it, scroll to it). */
+  showStep(index: number): Promise<void>;
   /** Forget the recorded steps (start of a new question). */
   resetSteps(): void;
   /** Show or hide the highlight caption chips on the page. */
@@ -113,6 +115,16 @@ export function createPresentationManager(
       if (tool !== "clear_presentation" && tool !== "open_link") {
         state.steps.push({ tool, input });
       }
+      // Follow along: a live highlight/annotation brings its first row into
+      // view so the page tracks the assistant as it talks. (The tour widget
+      // gives the reviewer control afterwards.)
+      if (tool === "highlight_lines" || tool === "annotate_line") {
+        const line = input.start_line ?? input.line;
+        if (typeof input.file === "string" && typeof line === "number") {
+          const row = findRow(input.file, line, ctx.root);
+          if (row) void scrollIntoViewSettled(row, "center");
+        }
+      }
       session.sendPresentationResult(call_id, true, { effect_id: outcome.effect_id });
     } else {
       session.sendPresentationResult(call_id, false, undefined, outcome.error, outcome.message);
@@ -142,6 +154,20 @@ export function createPresentationManager(
     },
     setLabelsVisible(visible: boolean) {
       ctx.root.documentElement.classList.toggle("libre-cr-hide-labels", !visible);
+    },
+    async showStep(index: number) {
+      const step = state.steps[index];
+      if (!step) return;
+      clearPresentation(ctx, "all");
+      state.effects.length = 0;
+      const outcome = await dispatchPresentationCall(ctx, step.tool, step.input);
+      if (outcome.ok) state.effects.push({ effect_id: outcome.effect_id, tool: step.tool });
+      const line = step.input.start_line ?? step.input.line;
+      if (typeof step.input.file === "string" && typeof line === "number") {
+        const row = findRow(step.input.file, line, ctx.root);
+        if (row) await scrollIntoViewSettled(row, "center");
+      }
+      fire();
     },
     resetSteps() {
       state.steps.length = 0;

@@ -76,4 +76,20 @@ describe("presentation replay", () => {
     m.clearAll();
     expect(document.querySelectorAll(".libre-cr-label").length).toBe(0);
   });
+
+  it("showStep shows exactly one step", async () => {
+    const m = createPresentationManager();
+    const { session, emit } = fakeSession();
+    m.attach(session);
+    emit({ type: "presentation_call", call_id: "c1", tool: "highlight_lines",
+      input: { file: "src/a.ts", start_line: 1, end_line: 1, label: "one", detail: "first thing" } });
+    emit({ type: "presentation_call", call_id: "c2", tool: "highlight_lines",
+      input: { file: "src/a.ts", start_line: 2, end_line: 2, label: "two" } });
+    await flush();
+    await m.showStep(1);
+    const rows = document.querySelectorAll('[data-libre-cr-tag="highlight"]');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.querySelector("td.blob-num")!.getAttribute("data-line-number")).toBe("2");
+    expect(m.steps[0]!.input.detail).toBe("first thing");
+  });
 });

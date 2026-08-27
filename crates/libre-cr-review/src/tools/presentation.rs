@@ -24,7 +24,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "highlight_lines".into(),
-            description: "Highlight a range of lines in the PR diff shown in the browser. Use this whenever the reviewer asks you to point out, show, mark or highlight code. ALWAYS pass `label`: it is rendered as a caption next to the code and is how the reviewer ties the highlight to your answer — make it the short heading of the part you are describing (≤ 8 words). Line numbers are NEW-side (right/after) numbers of the PR head; for deleted lines use the OLD-side number. Works for any file in the PR diff (the browser scrolls the file into view if needed).".into(),
+            description: "Highlight a range of lines in the PR diff shown in the browser. Use this whenever the reviewer asks you to point out, show, mark or highlight code. ALWAYS pass `label` (the short heading of the part, ≤ 8 words — shown as a caption next to the code) AND `detail` (your explanation of that part, 1–3 plain sentences — shown in the reviewer's tour widget next to the highlight, so it must stand on its own without the chat). Line numbers are NEW-side (right/after) numbers of the PR head; for deleted lines use the OLD-side number. Works for any file in the PR diff (the browser scrolls the file into view if needed).".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -33,7 +33,8 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
                     "end_line": {"type":"integer"},
                     "color": {"type":"string",
                               "enum":["red","yellow","green","blue","purple"]},
-                    "label": {"type":"string"}
+                    "label": {"type":"string", "description": "Short heading for this part (≤ 8 words)."},
+                    "detail": {"type":"string", "description": "Your explanation of this part, 1–3 plain sentences, self-contained."}
                 },
                 "required": ["file","start_line","end_line"]
             }),
