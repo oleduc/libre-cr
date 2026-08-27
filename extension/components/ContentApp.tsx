@@ -75,12 +75,12 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
             prDiffChanged: sess.pr_diff_changed,
             headSha: sess.head_sha,
           });
-          await pollUntilReady(c, sess.session_id, (ok) => {
+          await pollUntilReady(c, sess.session_id, (error) => {
             if (cancelled) return;
             setState((s) =>
-              ok
+              error === null
                 ? { ...s, status: "ready" }
-                : { ...s, status: "error", message: "Worktree never became ready" },
+                : { ...s, status: "error", message: `Could not prepare the repo: ${error}` },
             );
           });
         }
@@ -119,7 +119,7 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
           <>
             <div className="libre-cr-titlebar">Libre CR — preparing repo…</div>
             <div className="libre-cr-banner">
-              Worktree is being prepared. This usually takes a few seconds.
+              Worktree is being prepared. The first visit to a repo clones it, which can take a minute.
             </div>
           </>
         ) : null}
@@ -147,18 +147,25 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
   );
 }
 
+/** Poll until the worktree is ready (`done(null)`) or the daemon reports a
+ *  failure (`done(message)`). A first visit to a repo includes a full clone,
+ *  so the deadline is generous; failures still surface immediately. */
 async function pollUntilReady(
   client: DaemonClient,
   sessionId: string,
-  done: (ready: boolean) => void,
+  done: (error: string | null) => void,
 ): Promise<void> {
   const start = Date.now();
   let delay = 500;
-  while (Date.now() - start < 60_000) {
+  while (Date.now() - start < 10 * 60_000) {
     try {
       const r = await client.getSession(sessionId);
       if (r.worktree_ready) {
-        done(true);
+        done(null);
+        return;
+      }
+      if (r.status?.error) {
+        done(r.status.error);
         return;
       }
     } catch {
@@ -167,5 +174,5 @@ async function pollUntilReady(
     await new Promise((res) => setTimeout(res, delay));
     delay = Math.min(delay * 1.5, 4000);
   }
-  done(false);
+  done("timed out waiting for the worktree");
 }

@@ -251,6 +251,19 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   providers accept a `/v1` base (appending `/chat/completions` or `/messages`)
   or the full path. *Trigger: manual testing Tier 3 (OpenRouter). Specs: 04
   § LLM Provider Layer; docs configuration.md.*
+- **Worktree never became ready — for every repo.** Two gaps stacked: (1) the
+  orchestrator required `pr_data.remote_url`, which the extension never sends
+  (it scrapes only the slug), so prep failed instantly with "session has no
+  remote_url in pr_data"; (2) even with a URL, a discovery miss ended in
+  `clone_required` — "extension should prompt to clone (Phase 5)" — and the
+  extension has no such prompt, while the code daemon's `clone_repo` tool sat
+  unused. Meanwhile the panel polled `worktree_ready` only, ignored
+  `status.error`, and after 60 s said "Worktree never became ready".
+  **Fixed:** remote URL derived as `https://github.com/<owner>/<repo>.git`;
+  discovery miss → `clone_repo` into the managed cache → `prepare_worktree`;
+  the panel stops on `status.error` and shows it, and waits long enough for a
+  first clone. *Trigger: manual testing Tier 3. Specs: 04 § Worktree
+  orchestration; 05 § Content Script Lifecycle.*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

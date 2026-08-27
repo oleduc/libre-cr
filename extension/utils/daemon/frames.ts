@@ -133,7 +133,8 @@ export interface GetSessionResponse {
   session: SessionSummary & { pr_data?: unknown; head_sha?: string | null };
   turns: unknown[];
   worktree_ready: boolean;
-  status?: { state?: string; message?: string } | null;
+  /** Worktree orchestration status; `error` is set when `state` is `failed`. */
+  status?: { state?: unknown; error?: string | null; pending_action?: string | null } | null;
   head_sha?: string | null;
   last_seen_at?: number | null;
 }

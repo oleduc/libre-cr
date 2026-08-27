@@ -232,7 +232,7 @@ The shared crate also defines `PROTOCOL_VERSION` (currently `1`). The daemon rep
 - **Review daemon not running.** Extension cannot reach `localhost:<port>`. Shows a banner: "Review daemon not running. [Start daemon] [Configure]." The "Start daemon" button is best-effort (we cannot launch arbitrary binaries from a content script; user must run the install command or click a tray icon — see `08-distribution.md`).
 - **LLM provider rate-limited or down.** Review daemon's agent loop returns an error event to the WebSocket. Q&A panel shows the error with a retry button. Conversation state is preserved.
 - **Worktree fetch fails (network, auth).** Code daemon surfaces error to review daemon, which surfaces to extension. Q&A panel offers to retry or fall back to "read-only, current branch state" mode (uses whatever's checked out, even if not the PR ref).
-- **No local checkout for the PR's repo.** Code daemon prompts to clone (via review daemon → extension UI). User confirms; code daemon clones into its managed location. This flow is deliberately friction-bearing because cloning is not free.
+- **No local checkout for the PR's repo.** The review daemon derives the remote URL from the scraped slug (`https://github.com/<owner>/<repo>.git`) and, on a `discover_repo` miss, calls the code daemon's `clone_repo`, which clones into its managed cache (`<data_dir>/repos/…`, bounded by the eviction policy) before `prepare_worktree`. No consent prompt: the user opened the PR to review it. Private repos rely on the user's git credential helper. (Manual testing found the original prompt-to-clone flow was never built on the extension side.)
 
 ## Why This Shape
 

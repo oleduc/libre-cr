@@ -5,8 +5,8 @@
 //!      scraped `pr_data.remote_url`.
 //!   2. On hit, calls `prepare_worktree(repo_id, pr_ref)` and writes the
 //!      resulting path back onto the session row.
-//!   3. On miss, leaves the worktree empty and records a `pending_action:
-//!      "clone_required"` so the extension can prompt the user (Phase 5).
+//!   3. On miss, clones via `clone_repo` into the code daemon's managed cache,
+//!      then prepares the worktree as in step 2.
 //!
 //! Readiness is exposed via [`SessionStatusBoard`] so `GET /v1/sessions/:id`
 //! returns the latest state. Background work is idempotent on the session's
@@ -31,7 +31,7 @@ pub enum WorktreeState {
     Pending,
     /// Successfully prepared. `path` lives on the session row.
     Ready,
-    /// Discovery missed; extension should prompt to clone.
+    /// Reserved wire state; discovery misses now clone automatically.
     CloneRequired { remote_url: String },
     /// Preparation failed terminally.
     Failed { message: String },
@@ -62,17 +62,6 @@ impl SessionStatus {
             worktree_path: Some(path),
             repo_id,
             pending_action: None,
-            error: None,
-        }
-    }
-    pub fn clone_required(remote_url: String) -> Self {
-        Self {
-            state: WorktreeState::CloneRequired {
-                remote_url: remote_url.clone(),
-            },
-            worktree_path: None,
-            repo_id: None,
-            pending_action: Some("clone_required"),
             error: None,
         }
     }
@@ -156,12 +145,39 @@ pub async fn prepare_session(
         .get("ok")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if !found {
-        let status = SessionStatus::clone_required(remote_url);
-        board.set(&input.session_id, status.clone()).await;
-        return Ok(status);
-    }
-    let repo_id = discover
+    // Discovery miss → clone into the code daemon's managed cache
+    // (`<data_dir>/repos/<host>/<owner>/<repo>`) and carry on. There is no
+    // consent prompt: the user opened this PR to review it, and the cache is
+    // bounded by the daemon's eviction policy.
+    let repo_source = if found {
+        discover
+    } else {
+        match code
+            .call(
+                "clone_repo",
+                serde_json::json!({ "remote_url": remote_url }),
+            )
+            .await
+        {
+            Ok(v) if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) => v,
+            Ok(v) => {
+                let msg = v
+                    .get("error")
+                    .or_else(|| v.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("clone_repo returned ok=false");
+                let status = SessionStatus::failed(format!("clone failed: {msg}"));
+                board.set(&input.session_id, status.clone()).await;
+                return Ok(status);
+            }
+            Err(e) => {
+                let status = SessionStatus::failed(format!("clone failed: {e}"));
+                board.set(&input.session_id, status.clone()).await;
+                return Ok(status);
+            }
+        }
+    };
+    let repo_id = repo_source
         .get("repo_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
@@ -216,9 +232,11 @@ pub fn spawn_prepare(
 
 /// Extract `(remote_url, pr_ref)` from a session's scraped `pr_data`.
 ///
-/// `pr_data.remote_url` is what the GitHub adapter writes per spec; we also
-/// look at common alternates. The PR ref defaults to GitHub's `pull/<n>/head`
-/// pseudo-ref when we have a PR number.
+/// An explicit `remote_url` (or the common alternates) wins; otherwise it is
+/// derived from the scraped `owner`/`repo` as `https://github.com/<o>/<r>.git`
+/// — the extension only scrapes the slug. HTTPS so public repos need no
+/// credentials; private ones use the user's git credential helper. The PR ref
+/// defaults to GitHub's `pull/<n>/head` pseudo-ref when we have a PR number.
 pub fn pr_inputs_from_pr_data(
     pr_data: &serde_json::Value,
     pr_number: i64,
@@ -237,7 +255,12 @@ pub fn pr_inputs_from_pr_data(
                 .and_then(|m| m.get("remote_url"))
                 .and_then(|v| v.as_str())
         })
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or_else(|| {
+            let owner = pr_data.get("owner")?.as_str()?;
+            let repo = pr_data.get("repo")?.as_str()?;
+            Some(format!("https://github.com/{owner}/{repo}.git"))
+        });
     let pr_ref = pr_data
         .get("head_ref")
         .and_then(|v| v.as_str())
@@ -315,7 +338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discover_miss_returns_clone_required() {
+    async fn discover_miss_clones_then_prepares() {
         let store = Store::open_in_memory().unwrap();
         let sess = store
             .upsert_session("https://github.com/a/b/pull/2", serde_json::json!({}))
@@ -323,6 +346,8 @@ mod tests {
             .unwrap();
         let code: Arc<dyn CodeDaemonClient> = Arc::new(ScriptedClient::new(vec![
             serde_json::json!({"ok": false, "error": "unknown_repo"}),
+            serde_json::json!({"ok": true, "repo_id": "github.com/a/b", "repo_path": "/cache/a/b"}),
+            serde_json::json!({"ok": true, "worktree_path": "/wt2"}),
         ]));
         let board = SessionStatusBoard::new();
         let status = prepare_session(
@@ -337,8 +362,38 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(status.state, WorktreeState::CloneRequired { .. }));
-        assert_eq!(status.pending_action, Some("clone_required"));
+        assert_eq!(status.state, WorktreeState::Ready);
+        assert_eq!(status.worktree_path.as_deref(), Some("/wt2"));
+        assert_eq!(status.repo_id.as_deref(), Some("github.com/a/b"));
+    }
+
+    #[tokio::test]
+    async fn clone_failure_is_reported() {
+        let store = Store::open_in_memory().unwrap();
+        let sess = store
+            .upsert_session("https://github.com/a/b/pull/3", serde_json::json!({}))
+            .await
+            .unwrap();
+        let code: Arc<dyn CodeDaemonClient> = Arc::new(ScriptedClient::new(vec![
+            serde_json::json!({"ok": false, "error": "unknown_repo"}),
+            serde_json::json!({"ok": false, "error": "git clone: Repository not found"}),
+        ]));
+        let status = prepare_session(
+            store,
+            code,
+            SessionStatusBoard::new(),
+            PrepareInputs {
+                session_id: sess.session_id,
+                remote_url: Some("https://github.com/a/b".into()),
+                pr_ref: "pull/3/head".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status.error.as_deref(),
+            Some("clone failed: git clone: Repository not found")
+        );
     }
 
     #[tokio::test]
@@ -378,6 +433,18 @@ mod tests {
         let pr_data = serde_json::json!({"remote_url": "x", "head_ref": "refs/heads/feat/foo"});
         let (_u, r) = pr_inputs_from_pr_data(&pr_data, 5);
         assert_eq!(r, "refs/heads/feat/foo");
+    }
+
+    #[test]
+    fn pr_inputs_derives_remote_url_from_owner_repo() {
+        // What the extension actually sends: the scraped slug, no remote_url.
+        let pr_data = serde_json::json!({"owner": "BurntSushi", "repo": "ripgrep", "number": 3502});
+        let (u, r) = pr_inputs_from_pr_data(&pr_data, 3502);
+        assert_eq!(
+            u.as_deref(),
+            Some("https://github.com/BurntSushi/ripgrep.git")
+        );
+        assert_eq!(r, "pull/3502/head");
     }
 
     #[test]
