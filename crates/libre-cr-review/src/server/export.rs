@@ -22,6 +22,10 @@ pub struct ExportFilter {
     pub include_thinking: bool,
     #[serde(default)]
     pub severity_min: Option<Severity>,
+    /// Debug log: render every tool call's input and result (JSON), not just
+    /// its name/latency. Implies the investigation context.
+    #[serde(default)]
+    pub include_tool_io: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,7 +87,7 @@ pub async fn build_export(
                 }
                 md.push('\n');
             }
-            if filter.include_thinking {
+            if filter.include_thinking || filter.include_tool_io {
                 md.push_str("\n## Investigation context\n\n");
                 for t in &turns {
                     if t.kind != TurnKind::Question {
@@ -98,7 +102,7 @@ pub async fn build_export(
                     if !traces.is_empty() {
                         md.push_str("<details><summary>tools</summary>\n\n");
                         for tr in traces {
-                            push_trace(&mut md, &tr);
+                            push_trace(&mut md, &tr, filter.include_tool_io);
                         }
                         md.push_str("</details>\n\n");
                     }
@@ -189,13 +193,35 @@ fn anchor_path_line(sel: &libre_cr_common::Selection) -> (String, Option<u32>) {
     }
 }
 
-fn push_trace(md: &mut String, tr: &ToolTrace) {
+fn push_trace(md: &mut String, tr: &ToolTrace, with_io: bool) {
     md.push_str(&format!(
         "- {} ({} ms, {})\n",
         tr.tool_name,
         tr.duration_ms,
         if tr.ok { "ok" } else { "err" }
     ));
+    if with_io {
+        md.push_str(&format!(
+            "\n  input:\n\n  ```json\n{}\n  ```\n\n  result:\n\n  ```json\n{}\n  ```\n\n",
+            indent_json(&tr.input_json),
+            indent_json(&tr.output_json)
+        ));
+    }
+}
+
+/// Per-value cap for the tool log; a `get_pr_diff` result can be megabytes.
+const TOOL_IO_MAX_CHARS: usize = 8_000;
+
+fn indent_json(v: &serde_json::Value) -> String {
+    let pretty = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+    let mut body: String = pretty.chars().take(TOOL_IO_MAX_CHARS).collect();
+    if pretty.chars().count() > TOOL_IO_MAX_CHARS {
+        body.push_str("\n… [truncated]");
+    }
+    body.lines()
+        .map(|l| format!("  {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -304,6 +330,7 @@ mod tests {
                 filter: Some(ExportFilter {
                     include_thinking: true,
                     severity_min: None,
+                    include_tool_io: false,
                 }),
             },
         )
@@ -311,5 +338,58 @@ mod tests {
         .unwrap();
         assert!(r.content.contains("Investigation context"));
         assert!(r.content.contains("hi?"));
+    }
+
+    #[tokio::test]
+    async fn tool_io_log_renders_inputs_and_results_only_when_asked() {
+        let store = Store::open_in_memory().unwrap();
+        let s = seed_session(&store).await;
+        let ord = store.next_ordinal(&s.session_id).await.unwrap();
+        let t = Turn {
+            turn_id: format!("t_{}", Uuid::new_v4().simple()),
+            session_id: s.session_id.clone(),
+            ordinal: ord,
+            kind: TurnKind::Question,
+            status: TurnStatus::Ok,
+            verb: None,
+            question: Some("show me".into()),
+            selection: None,
+            answer: Some("done".into()),
+            user_content: None,
+            severity: None,
+            usage_in: 0,
+            usage_out: 0,
+            created_at: Utc::now().timestamp_millis(),
+            source_turn_id: None,
+        };
+        let trace = ToolTrace {
+            trace_id: "tr_1".into(),
+            turn_id: t.turn_id.clone(),
+            ordinal: 0,
+            tool_name: "highlight_lines".into(),
+            input_json: serde_json::json!({"file": "a.rs", "start_line": 69, "end_line": 113}),
+            output_json: serde_json::json!({"error": "file_not_in_view", "message": "no rows for a.rs:69"}),
+            duration_ms: 26,
+            ok: true,
+        };
+        store.insert_turn(&t, &[trace]).await.unwrap();
+        let export = |io: bool| ExportRequest {
+            format: ExportFormat::Markdown,
+            filter: Some(ExportFilter {
+                include_thinking: true,
+                severity_min: None,
+                include_tool_io: io,
+            }),
+        };
+        let plain = build_export(&store, &s, &export(false)).await.unwrap();
+        assert!(plain.content.contains("- highlight_lines (26 ms, ok)"));
+        assert!(!plain.content.contains("file_not_in_view"));
+        let log = build_export(&store, &s, &export(true)).await.unwrap();
+        assert!(
+            log.content.contains("\"start_line\": 69"),
+            "{}",
+            log.content
+        );
+        assert!(log.content.contains("no rows for a.rs:69"));
     }
 }

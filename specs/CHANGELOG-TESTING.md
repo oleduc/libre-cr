@@ -324,6 +324,13 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   prompt states the checkout path and base branch and that code tools already
   operate there. *Trigger: manual testing Tier 3. Specs: 04 § Agent Loop,
   § Tool Composition.*
+- **Export "tool call log" option.** Diagnosing presentation failures needed
+  the tool inputs/results, which the export only summarised as `name (ms, ok)`
+  — "ok" there is transport, not the tool's outcome — so they had to be read
+  from SQLite by hand. `ExportFilter.include_tool_io` renders each trace's
+  input and result as JSON (capped per value); the export modal has an
+  "Include tool call log" checkbox (context/transcript modes).
+  *Trigger: manual testing — debugging highlights.*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*
