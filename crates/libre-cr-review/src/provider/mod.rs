@@ -135,6 +135,22 @@ fn resolve_api_key(stored: &str, env_var: &str) -> String {
     std::env::var(env_var).unwrap_or_default()
 }
 
+/// Decrypt the stored key and apply [`resolve_api_key`]. A *non-empty* stored
+/// key that fails to decrypt is an error — falling back to the ambient env var
+/// there would silently route reviews through a different account's key.
+fn stored_or_env_key(cfg: &Config, install_key: &InstallKey, env_var: &str) -> Result<String> {
+    let stored = if cfg.provider.api_key_enc.is_empty() {
+        String::new()
+    } else {
+        decrypt_value(install_key, &cfg.provider.api_key_enc).map_err(|e| {
+            Error::Validation(format!(
+                "stored API key could not be decrypted ({e}); re-enter it in the config UI"
+            ))
+        })?
+    };
+    Ok(resolve_api_key(&stored, env_var))
+}
+
 /// Construct a provider from a config snapshot. Used at startup and on
 /// every accepted `POST /v1/config` so the running daemon picks up provider
 /// changes without a restart (RC1).
@@ -144,10 +160,7 @@ pub fn build_provider(cfg: &Config, install_key: &InstallKey) -> Result<Arc<dyn 
             cfg.mock.provider_script.clone(),
         ))),
         "anthropic" => {
-            let key = resolve_api_key(
-                &decrypt_value(install_key, &cfg.provider.api_key_enc).unwrap_or_default(),
-                "ANTHROPIC_API_KEY",
-            );
+            let key = stored_or_env_key(cfg, install_key, "ANTHROPIC_API_KEY")?;
             let p = AnthropicProvider::new(
                 key,
                 cfg.provider.model.clone(),
@@ -158,10 +171,7 @@ pub fn build_provider(cfg: &Config, install_key: &InstallKey) -> Result<Arc<dyn 
             Ok(Arc::new(p))
         }
         "openai_compat" => {
-            let key = resolve_api_key(
-                &decrypt_value(install_key, &cfg.provider.api_key_enc).unwrap_or_default(),
-                "OPENAI_API_KEY",
-            );
+            let key = stored_or_env_key(cfg, install_key, "OPENAI_API_KEY")?;
             let p = OpenAICompatProvider::new(
                 key,
                 cfg.provider.model.clone(),
@@ -180,10 +190,7 @@ pub fn build_provider(cfg: &Config, install_key: &InstallKey) -> Result<Arc<dyn 
 /// downcasting a `dyn Provider`. Mirrors the `anthropic` arm above.
 #[cfg(test)]
 fn build_anthropic_for_test(cfg: &Config, install_key: &InstallKey) -> AnthropicProvider {
-    let key = resolve_api_key(
-        &decrypt_value(install_key, &cfg.provider.api_key_enc).unwrap_or_default(),
-        "ANTHROPIC_API_KEY",
-    );
+    let key = stored_or_env_key(cfg, install_key, "ANTHROPIC_API_KEY").expect("decrypt");
     AnthropicProvider::new(
         key,
         cfg.provider.model.clone(),
@@ -196,10 +203,7 @@ fn build_anthropic_for_test(cfg: &Config, install_key: &InstallKey) -> Anthropic
 /// As [`build_anthropic_for_test`] but for the OpenAI-compatible arm.
 #[cfg(test)]
 fn build_openai_for_test(cfg: &Config, install_key: &InstallKey) -> OpenAICompatProvider {
-    let key = resolve_api_key(
-        &decrypt_value(install_key, &cfg.provider.api_key_enc).unwrap_or_default(),
-        "OPENAI_API_KEY",
-    );
+    let key = stored_or_env_key(cfg, install_key, "OPENAI_API_KEY").expect("decrypt");
     OpenAICompatProvider::new(
         key,
         cfg.provider.model.clone(),
@@ -213,6 +217,24 @@ fn build_openai_for_test(cfg: &Config, install_key: &InstallKey) -> OpenAICompat
 mod tests {
     use super::*;
     use crate::storage::encrypt_value;
+
+    #[test]
+    fn undecryptable_stored_key_is_an_error_not_an_env_fallback() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-env");
+        let mut cfg = Config::default();
+        cfg.provider.kind = "anthropic".into();
+        cfg.provider.api_key_enc = "not-a-ciphertext".into();
+        let result = build_provider(&cfg, &InstallKey::from_bytes([7u8; 32]));
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        match result {
+            Err(Error::Validation(msg)) => assert!(msg.contains("could not be decrypted"), "{msg}"),
+            other => panic!(
+                "expected Validation error, got {:?}",
+                other.map(|_| "provider")
+            ),
+        }
+    }
 
     /// Serializes all tests that mutate process-global environment variables.
     /// `cargo test` runs tests in the same crate concurrently, so two env

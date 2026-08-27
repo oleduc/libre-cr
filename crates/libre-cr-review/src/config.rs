@@ -246,25 +246,33 @@ impl Config {
     /// One-time migration: if the new default path has no file but the old
     /// `dirs::config_dir()` location (macOS: Application Support) has one,
     /// copy it over. No-op on platforms where the two coincide (Linux).
-    pub fn migrate_macos_legacy() {
+    /// Returns the path to load: the new default, or the legacy file in place
+    /// when the copy failed — never silently defaults over a readable config.
+    pub fn migrate_macos_legacy() -> PathBuf {
         let new_path = Self::default_path();
         let legacy = Self::macos_legacy_path();
         if legacy == new_path || new_path.exists() || !legacy.exists() {
-            return;
+            return new_path;
         }
         if let Some(parent) = new_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         match std::fs::copy(&legacy, &new_path) {
-            Ok(_) => tracing::info!(
-                from = %legacy.display(),
-                to = %new_path.display(),
-                "migrated review.toml to ~/.config/libre-cr/"
-            ),
-            Err(e) => tracing::warn!(
-                from = %legacy.display(),
-                "could not migrate legacy review.toml: {e}"
-            ),
+            Ok(_) => {
+                tracing::info!(
+                    from = %legacy.display(),
+                    to = %new_path.display(),
+                    "migrated review.toml to ~/.config/libre-cr/"
+                );
+                new_path
+            }
+            Err(e) => {
+                tracing::warn!(
+                    from = %legacy.display(),
+                    "could not migrate legacy review.toml: {e}; loading it in place"
+                );
+                legacy
+            }
         }
     }
 }

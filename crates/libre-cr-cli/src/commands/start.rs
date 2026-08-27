@@ -44,7 +44,14 @@ pub async fn run(autostart: bool) -> Result<()> {
     // one (the daemon uses an ephemeral port by default, so the old contents
     // are almost always wrong). Found by manual testing: the banner printed a
     // dead endpoint from the prior session.
-    let _ = std::fs::remove_file(paths::endpoint_file());
+    if let Err(e) = std::fs::remove_file(paths::endpoint_file()) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "libre-cr: warning: could not remove stale endpoint file {}: {e}",
+                paths::endpoint_file().display()
+            );
+        }
+    }
 
     // First-run summary, printed *before* we hand the foreground to the
     // supervisor. We can't know the daemon's chosen port until it writes

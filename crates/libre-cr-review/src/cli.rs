@@ -55,9 +55,9 @@ pub async fn run() -> anyhow::Result<()> {
         Some(p) => p,
         None => {
             // Pick up a review.toml stranded at the pre-fix macOS location
-            // (Application Support) before resolving the default.
-            Config::migrate_macos_legacy();
-            Config::default_path()
+            // (Application Support); falls back to loading it in place if the
+            // copy fails.
+            Config::migrate_macos_legacy()
         }
     };
     match cli.command.unwrap_or(Command::Serve) {

@@ -420,7 +420,12 @@ fn apply_provider_patch(
         cfg.provider.endpoint = s.to_string();
     }
     if let Some(s) = p.get("api_key").and_then(|s| s.as_str()) {
-        cfg.provider.api_key_enc = crate::storage::encrypt_value(install_key, s)?;
+        // An explicit empty string clears the saved key (→ env-var fallback).
+        cfg.provider.api_key_enc = if s.is_empty() {
+            String::new()
+        } else {
+            crate::storage::encrypt_value(install_key, s)?
+        };
     }
     Ok(())
 }
@@ -685,6 +690,7 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
   .hint { font-size: 0.85rem; color: #064; margin: 0.25rem 0 0; }
   .modelStatus { font-size: 0.85rem; color: #555; margin: 0.25rem 0 0; }
   .modelStatus.err { color: #803; }
+label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -726,6 +732,7 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
   <div id="apiKeyField">
     <label for="api_key">API key <small>(stored encrypted)</small></label>
     <input id="api_key" name="api_key" type="password" autocomplete="off" placeholder="leave blank to keep current" />
+    <label class="inline"><input id="clear_key" type="checkbox" /> Clear the saved key (use the environment variable, or none)</label>
   </div>
   <p id="detectedHint" class="hint" hidden></p>
 
@@ -747,6 +754,12 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
   var detectedHint = document.getElementById("detectedHint");
   var apiKeyField = document.getElementById("apiKeyField");
   var apiKeyEl = document.getElementById("api_key");
+  var clearKeyEl = document.getElementById("clear_key");
+  // Blank field = keep the stored key; the checkbox sends api_key: "" to clear it.
+  function apiKeyPatch(target) {
+    if (apiKeyEl.value) target.api_key = apiKeyEl.value;
+    else if (clearKeyEl.checked) target.api_key = "";
+  }
   var endpointEl = document.getElementById("endpoint");
   // Detected ambient credentials, keyed by provider kind.
   var detected = { anthropic: false, openai_compat: false };
@@ -809,7 +822,7 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
 
   function providerPatch() {
     var patch = { kind: kindEl.value, endpoint: endpointEl.value };
-    if (apiKeyEl.value) patch.api_key = apiKeyEl.value;
+    apiKeyPatch(patch);
     return patch;
   }
 
@@ -858,7 +871,7 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
       temperature: Number(document.getElementById("temperature").value),
       endpoint: endpointEl.value,
     }};
-    if (apiKeyEl.value) body.provider.api_key = apiKeyEl.value;
+    apiKeyPatch(body.provider);
     fetch("/v1/config", {
       method: "POST", headers: headers, body: JSON.stringify(body),
     }).then(function (r) {
@@ -867,6 +880,7 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
     }).then(function () {
       setStatus("Saved.", true);
       apiKeyEl.value = "";
+      clearKeyEl.checked = false;
     }).catch(function (e) {
       setStatus("Save failed: " + e.message, false);
     });

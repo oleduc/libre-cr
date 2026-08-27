@@ -139,7 +139,7 @@ In the config UI: pick a provider, then **Fetch models** to populate the model
 dropdown from the provider's live API, and save. Provider changes **hot-reload —
 no restart needed.**
 
-Three credential paths (see [configuration.md](user-guide/configuration.md) for
+Two credential paths (see [configuration.md](user-guide/configuration.md) for
 the full reference):
 
 - **API key** — `anthropic` or `openai_compat`; paste the key in the config UI

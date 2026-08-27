@@ -176,11 +176,14 @@ impl Config {
                     to = %new_path.display(),
                     "migrated code.toml from Application Support to ~/.config/libre-cr/"
                 ),
-                Err(e) => tracing::warn!(
-                    from = %macos_legacy.display(),
-                    error = %e,
-                    "could not migrate Application Support code.toml"
-                ),
+                Err(e) => {
+                    tracing::warn!(
+                        from = %macos_legacy.display(),
+                        error = %e,
+                        "could not migrate Application Support code.toml; loading it in place"
+                    );
+                    return Self::load_from(&macos_legacy);
+                }
             }
         }
         let legacy_path = Self::legacy_path();

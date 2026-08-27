@@ -21,17 +21,19 @@ use super::{ContentBlock, Message, ModelInfo, Provider, Role, StreamEvent, ToolS
 /// trailing `/messages` for `/models`. For a non-standard endpoint we fall
 /// back to `<scheme>://<host>/v1/models`.
 fn models_url_from_endpoint(endpoint: &str) -> String {
+    // `limit=1000` is the API maximum and comfortably above the catalogue
+    // size, so a single page is the whole list (default page size is 20).
     if let Some(prefix) = endpoint.strip_suffix("/messages") {
-        return format!("{prefix}/models");
+        return format!("{prefix}/models?limit=1000");
     }
     // Best-effort: keep scheme + authority, force a `/v1/models` path.
     if let Some((scheme, rest)) = endpoint.split_once("://") {
         let host = rest.split('/').next().unwrap_or(rest);
         if !host.is_empty() {
-            return format!("{scheme}://{host}/v1/models");
+            return format!("{scheme}://{host}/v1/models?limit=1000");
         }
     }
-    "https://api.anthropic.com/v1/models".to_string()
+    "https://api.anthropic.com/v1/models?limit=1000".to_string()
 }
 
 /// Parse the Anthropic `GET /v1/models` response body. Shape:
@@ -704,7 +706,7 @@ mod tests {
     fn models_url_swaps_messages_for_models() {
         assert_eq!(
             models_url_from_endpoint("https://api.anthropic.com/v1/messages"),
-            "https://api.anthropic.com/v1/models"
+            "https://api.anthropic.com/v1/models?limit=1000"
         );
     }
 
@@ -713,7 +715,7 @@ mod tests {
         // A proxy on a custom path → best-effort <scheme>://<host>/v1/models.
         assert_eq!(
             models_url_from_endpoint("https://proxy.example.com:8443/anthropic/relay"),
-            "https://proxy.example.com:8443/v1/models"
+            "https://proxy.example.com:8443/v1/models?limit=1000"
         );
     }
 
