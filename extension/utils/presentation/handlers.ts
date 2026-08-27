@@ -77,9 +77,12 @@ export function highlightLines(
   for (let l = start; l <= end; l++) {
     const row = findRow(input.file, l, ctx.root);
     if (!row) continue;
+    // Attributes, not classes: GitHub's React rewrites `className` on hover /
+    // selection re-renders and would wipe a class; unknown `data-*` survive.
     row.classList.add("libre-cr-effect", colorClass(color));
     row.setAttribute("data-libre-cr-effect-id", effectId);
     row.setAttribute("data-libre-cr-tag", "highlight");
+    row.setAttribute("data-libre-cr-color", color);
     if (input.label) row.setAttribute("title", input.label);
     applied++;
   }
@@ -205,6 +208,7 @@ export function clearPresentation(
         // For highlights, only strip the markers/classes; leave the row.
         el.removeAttribute("data-libre-cr-effect-id");
         el.removeAttribute("data-libre-cr-tag");
+        el.removeAttribute("data-libre-cr-color");
         el.removeAttribute("title");
         el.classList.remove(
           "libre-cr-effect",

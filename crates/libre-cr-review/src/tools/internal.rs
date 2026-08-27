@@ -18,7 +18,7 @@ pub fn internal_tool_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "get_pr_diff".into(),
-            description: "Return the diff scraped from this PR.".into(),
+            description: "Diff text scraped from the PR page, if the extension captured any — usually EMPTY. Prefer git_diff on the prepared worktree (PR head vs its base) for the actual changes.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{}}),
         },
         ToolSchema {

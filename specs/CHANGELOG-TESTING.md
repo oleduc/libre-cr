@@ -290,6 +290,23 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   `hitTestLine` now honours the clicked cell's own line/side (React UI code
   cells carry `data-line-number`/`data-diff-side`) instead of always taking
   the row's first (old-side) number. *Trigger: manual testing.*
+- **Presentation tools vs. GitHub's virtualized diff.** The React "changes" UI
+  renders only files near the viewport (`data-estimated-height` placeholders,
+  progressive list); `findRow` returns nothing for the rest, so
+  `highlight_lines` / `scroll_to` on a file below the fold fail with
+  `file_not_in_view`. Also observed: GitHub's React rewrites row `className` on
+  hover/selection, wiping effect *classes* — effects are now keyed on `data-*`
+  attributes (`data-libre-cr-tag`, `data-libre-cr-color`) which React leaves
+  alone. Tool descriptions now tell the model when to highlight, that lines are
+  NEW-side numbers, that `scroll_to` needs a line inside a hunk, and that
+  `get_pr_diff` is normally empty (the extension never scraped hunks) so it
+  should use `git_diff` on the worktree. Still open: forcing GitHub to render a
+  file (scroll the placeholder into view, then retry) before highlighting.
+  *Trigger: manual testing Tier 3 — "scroll to top, no highlights".*
+- **Reloading the extension orphans open tabs' content scripts** — the panel
+  shows "Extension context invalidated" and every call fails until the page is
+  reloaded. Should detect `runtime` loss and show "reload this page".
+  *Trigger: manual testing (dev loop).*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

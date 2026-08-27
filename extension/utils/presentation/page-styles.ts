@@ -4,23 +4,21 @@
 // to the page's `style-src` CSP, unlike an inline <style>.
 
 export const EFFECT_STYLES = `
-tr.libre-cr-effect > td { box-shadow: inset 4px 0 0 var(--libre-cr-hl, #0969da); }
-tr.libre-cr-hl-blue   { --libre-cr-hl: #0969da; background: rgba(9, 105, 218, 0.14) !important; }
-tr.libre-cr-hl-red    { --libre-cr-hl: #cf222e; background: rgba(207, 34, 46, 0.16) !important; }
-tr.libre-cr-hl-yellow { --libre-cr-hl: #bf8700; background: rgba(191, 135, 0, 0.18) !important; }
-tr.libre-cr-hl-green  { --libre-cr-hl: #1a7f37; background: rgba(26, 127, 55, 0.16) !important; }
-tr.libre-cr-hl-purple { --libre-cr-hl: #8250df; background: rgba(130, 80, 223, 0.14) !important; }
-tr.libre-cr-effect.libre-cr-hl-blue > td, tr.libre-cr-effect.libre-cr-hl-red > td,
-tr.libre-cr-effect.libre-cr-hl-yellow > td, tr.libre-cr-effect.libre-cr-hl-green > td,
-tr.libre-cr-effect.libre-cr-hl-purple > td { background: inherit !important; }
-tr.libre-cr-annotation > td.libre-cr-annotation-cell {
+/* Keyed on data-* attributes: GitHub's React rewrites className on re-render. */
+tr[data-libre-cr-tag="highlight"] > td { background: var(--libre-cr-bg) !important; box-shadow: inset 4px 0 0 var(--libre-cr-hl); }
+tr[data-libre-cr-tag="highlight"]                            { --libre-cr-hl: #0969da; --libre-cr-bg: rgba(9, 105, 218, 0.16); }
+tr[data-libre-cr-tag="highlight"][data-libre-cr-color="red"]    { --libre-cr-hl: #cf222e; --libre-cr-bg: rgba(207, 34, 46, 0.18); }
+tr[data-libre-cr-tag="highlight"][data-libre-cr-color="yellow"] { --libre-cr-hl: #bf8700; --libre-cr-bg: rgba(191, 135, 0, 0.22); }
+tr[data-libre-cr-tag="highlight"][data-libre-cr-color="green"]  { --libre-cr-hl: #1a7f37; --libre-cr-bg: rgba(26, 127, 55, 0.18); }
+tr[data-libre-cr-tag="highlight"][data-libre-cr-color="purple"] { --libre-cr-hl: #8250df; --libre-cr-bg: rgba(130, 80, 223, 0.16); }
+tr[data-libre-cr-tag="annotation"] > td.libre-cr-annotation-cell {
   padding: 6px 12px 6px 16px; font: 12px/1.45 system-ui, -apple-system, sans-serif;
-  color: #1f2328; background: #fff8c5; border-left: 4px solid #bf8700; white-space: normal;
+  color: #1f2328; background: #f6f8fa; border-left: 4px solid #8c959f; white-space: normal;
 }
-tr.libre-cr-annotation.libre-cr-sev-critical > td, tr.libre-cr-annotation.libre-cr-sev-warning > td { background: #ffebe9; border-left-color: #cf222e; }
-tr.libre-cr-annotation.libre-cr-sev-suggestion > td { background: #ddf4ff; border-left-color: #0969da; }
-tr.libre-cr-annotation.libre-cr-sev-info > td { background: #f6f8fa; border-left-color: #8c959f; }
-tr.libre-cr-flash > td { animation: libre-cr-flash 1.4s ease-out; }
+tr[data-libre-cr-tag="annotation"].libre-cr-sev-suggestion > td { background: #ddf4ff; border-left-color: #0969da; }
+tr[data-libre-cr-tag="annotation"].libre-cr-sev-warning > td    { background: #fff8c5; border-left-color: #bf8700; }
+tr[data-libre-cr-tag="annotation"].libre-cr-sev-critical > td   { background: #ffebe9; border-left-color: #cf222e; }
+tr[data-libre-cr-tag="flash"] > td { animation: libre-cr-flash 1.4s ease-out; }
 @keyframes libre-cr-flash { 0%, 40% { background: rgba(9, 105, 218, 0.35); } 100% { background: transparent; } }
 `;
 
