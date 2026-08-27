@@ -18,19 +18,25 @@ pub struct Hunk {
     pub lines: Vec<String>,
 }
 
+/// `merge_base = true` diffs from `merge-base(from, to)` to `to` (git's
+/// three-dot form) — what a PR page shows. Two-dot compares the tips, so any
+/// commit the base branch gained after the PR forked appears as a bogus
+/// "deletion" in the PR.
 pub async fn git_diff(
     repo_path: &Path,
     from_ref: &str,
     to_ref: &str,
     paths: Option<&[String]>,
+    merge_base: bool,
 ) -> Result<Vec<DiffFile>, ToolError> {
     validate_ref(from_ref)?;
     validate_ref(to_ref)?;
+    let dots = if merge_base { "..." } else { ".." };
     let mut cmd = tokio::process::Command::new("git");
     cmd.arg("-C")
         .arg(repo_path)
         .args(["diff", "--unified=3"])
-        .arg(format!("{from_ref}..{to_ref}"));
+        .arg(format!("{from_ref}{dots}{to_ref}"));
     // `--` separator is always emitted, even with no paths, so any subsequent
     // accidentally-added arg won't be interpreted as a ref.
     cmd.arg("--");

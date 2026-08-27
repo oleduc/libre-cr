@@ -196,7 +196,7 @@ impl Tool for GitDiff {
         "git_diff"
     }
     fn description(&self) -> &'static str {
-        "Structured diff between two refs."
+        "Structured diff between two refs. Set merge_base=true to diff from their merge-base (three-dot, what a PR page shows) instead of tip-to-tip."
     }
     fn input_schema(&self) -> Value {
         json!({
@@ -206,7 +206,8 @@ impl Tool for GitDiff {
                 "repo_path": { "type": "string" },
                 "from_ref": { "type": "string" },
                 "to_ref": { "type": "string" },
-                "paths": { "type": "array" }
+                "paths": { "type": "array" },
+                "merge_base": { "type": "boolean" }
             }
         })
     }
@@ -234,7 +235,12 @@ impl Tool for GitDiff {
                         .filter_map(|x| x.as_str().map(|s| s.to_string()))
                         .collect()
                 });
-            let files = diff::git_diff(&repo_path, &from, &to, paths.as_deref()).await?;
+            let merge_base = input
+                .get("merge_base")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let files =
+                diff::git_diff(&repo_path, &from, &to, paths.as_deref(), merge_base).await?;
             let payload: Vec<Value> = files
                 .into_iter()
                 .map(|f| {

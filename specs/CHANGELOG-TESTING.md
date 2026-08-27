@@ -331,6 +331,13 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   input and result as JSON (capped per value); the export modal has an
   "Include tool call log" checkbox (context/transcript modes).
   *Trigger: manual testing — debugging highlights.*
+- **`get_pr_diff` reported changes that aren't in the PR.** The router used a
+  tip-to-tip diff (`origin/main..HEAD`); `main` had gained commits since the PR
+  forked, so they appeared as "deleted in the PR" (14 files vs GitHub's 9 — the
+  phantom CDK-table rollback). **Fixed:** the code daemon's `git_diff` gained
+  `merge_base` (three-dot `origin/<base>...HEAD`), which the router always sets;
+  the model's own `git_diff` calls can use it too. *Trigger: manual testing —
+  reviewer spotted a file not in the PR.*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

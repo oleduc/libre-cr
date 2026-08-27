@@ -137,10 +137,13 @@ impl ToolRouter {
         let (Some(path), Some(base)) = (&self.worktree_path, self.base_ref()) else {
             return self.internal.call("get_pr_diff", input.clone()).await;
         };
+        // Three-dot (merge-base) diff: what the PR page shows. Tip-to-tip made
+        // every commit `main` gained since the PR forked look like a deletion.
         let mut args = serde_json::json!({
             "repo_path": path,
-            "from_ref": base,   // ponytail: two-dot diff; base drift since clone is negligible
+            "from_ref": base,
             "to_ref": "HEAD",
+            "merge_base": true,
         });
         if let Some(paths) = input.get("paths") {
             args["paths"] = paths.clone();
@@ -495,6 +498,7 @@ mod tests {
             assert_eq!(args["repo_path"], "/wt");
             assert_eq!(args["from_ref"], "origin/main");
             assert_eq!(args["to_ref"], "HEAD");
+            assert_eq!(args["merge_base"], true);
             assert_eq!(args["paths"][0], "a.rs");
         }
 
