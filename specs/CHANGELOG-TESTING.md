@@ -279,7 +279,12 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   `unclean-exit code=None` and respawns it 250 ms later (on a fresh ephemeral
   port), and the next `start` reports "already running". `stop` must target the
   supervisor, or the supervisor must treat a stop-requested TERM as intentional.
-  *Trigger: manual testing — restart after a config edit.*
+  Related: the supervisor runs in the foreground, so the daemons live and die
+  with whatever launched them — during testing a launcher reaping its children
+  after hours idle took the review daemon down twice (`graceful-stop`, no
+  crash). A `libre-cr start --detach` (own session, `setsid`-style) or a
+  launchd/systemd unit at distribution time is the real fix.
+  *Trigger: manual testing — restart after a config edit; idle kills.*
 - **Pairing UX: one-time code + 5-minute TTL is a bad experience.** Manual
   testing: the code expired before the extension was loaded and the options
   form filled in (endpoint must also be re-typed — the form defaults to
