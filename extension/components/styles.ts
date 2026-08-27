@@ -4,6 +4,8 @@
 export const PANEL_STYLES = `
 :host, :root { all: initial; }
 * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+.libre-cr-steps { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; }
+.libre-cr-steps button { padding: 1px 6px; }
 .libre-cr-reopen {
   position: fixed;
   right: 24px;

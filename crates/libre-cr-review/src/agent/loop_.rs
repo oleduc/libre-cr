@@ -76,10 +76,13 @@ fn build_system_prompt(
         s.push_str(
             "\n\nYou have presentation tools that affect what the reviewer sees \
              in the browser: highlight_lines, annotate_line, scroll_to, \
-             open_link, clear_presentation. Use them sparingly to amplify your \
-             answer when they help the reviewer follow it. The answer text \
-             remains primary. If a presentation call fails for one file \
-             (e.g. file_not_in_view), say so briefly and continue with the \
+             open_link, clear_presentation. When the reviewer asks you to walk \
+             through, point out, show or highlight parts of the PR, highlight \
+             each part you describe (highlight_lines with a short label, in the \
+             order you present them) — that is the expected deliverable, not an \
+             extra. For plain questions, use them only when they help. The \
+             answer text remains primary. If a presentation call fails for one \
+             file (e.g. file_not_in_view), say so briefly and continue with the \
              others — never abandon the rest of the walkthrough over it.",
         );
     }

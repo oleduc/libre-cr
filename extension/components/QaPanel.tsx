@@ -33,7 +33,9 @@ export function QaPanel(props: QaPanelProps) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
-  const [effects, setEffects] = useState({ highlights: 0, annotations: 0 });
+  const [effects, setEffects] = useState({ highlights: 0, annotations: 0, steps: 0 });
+  /** Replay cursor into the current turn's presentation steps (-1 = none). */
+  const [stepIndex, setStepIndex] = useState(-1);
   const [error, setError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -44,7 +46,11 @@ export function QaPanel(props: QaPanelProps) {
   useEffect(() => {
     const m = presentationRef.current;
     const off = m.onChange((mm) => {
-      setEffects({ highlights: mm.highlightsCount, annotations: mm.annotationsCount });
+      setEffects({
+        highlights: mm.highlightsCount,
+        annotations: mm.annotationsCount,
+        steps: mm.steps.length,
+      });
     });
     return () => {
       off();
@@ -154,8 +160,10 @@ export function QaPanel(props: QaPanelProps) {
       if (asking) return;
       setAsking(true);
       setError(null);
-      // Auto-clear previous effects.
+      // Auto-clear previous effects and start a fresh replay list.
       presentationRef.current.clearAll();
+      presentationRef.current.resetSteps();
+      setStepIndex(-1);
       const turnId = newTurnId();
       // Mark earlier qa turns collapsed.
       setTurns((all) =>
@@ -473,6 +481,44 @@ export function QaPanel(props: QaPanelProps) {
           {effects.highlights} highlight{effects.highlights === 1 ? "" : "s"} ·{" "}
           {effects.annotations} annotation{effects.annotations === 1 ? "" : "s"}
         </span>
+        {effects.steps > 0 ? (
+          <span className="libre-cr-steps" data-testid="presentation-steps">
+            <button
+              aria-label="Previous presentation step"
+              disabled={stepIndex <= 0}
+              onClick={() => {
+                const i = stepIndex - 1;
+                setStepIndex(i);
+                void presentationRef.current.replayTo(i);
+              }}
+            >
+              ◀
+            </button>
+            <span title="Step through what the assistant showed, in order">
+              {stepIndex < 0 ? "–" : stepIndex + 1}/{effects.steps}
+            </span>
+            <button
+              aria-label="Next presentation step"
+              disabled={stepIndex >= effects.steps - 1}
+              onClick={() => {
+                const i = stepIndex + 1;
+                setStepIndex(i);
+                void presentationRef.current.replayTo(i);
+              }}
+            >
+              ▶
+            </button>
+            <button
+              title="Re-apply every highlight and scroll from this answer"
+              onClick={() => {
+                setStepIndex(effects.steps - 1);
+                void presentationRef.current.replayTo();
+              }}
+            >
+              Replay
+            </button>
+          </span>
+        ) : null}
         <button
           onClick={() => presentationRef.current.clearAll()}
           title="Remove highlights and annotations from the diff (the conversation stays)"

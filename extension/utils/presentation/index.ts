@@ -16,8 +16,20 @@ export interface PresentationEffectRecord {
   turn_id?: string;
 }
 
+/** One presentation call the model made in the current turn, replayable. */
+export interface PresentationStep {
+  tool: string;
+  input: Record<string, unknown>;
+}
+
 export interface PresentationManager {
   effects: PresentationEffectRecord[];
+  /** Successful presentation calls of the current turn, in order. */
+  steps: PresentationStep[];
+  /** Re-apply steps 0..=index from a clean page (all steps when omitted). */
+  replayTo(index?: number): Promise<void>;
+  /** Forget the recorded steps (start of a new question). */
+  resetSteps(): void;
   highlightsCount: number;
   annotationsCount: number;
   attach(session: AskSession): () => void;
@@ -49,6 +61,7 @@ export function createPresentationManager(
 
   const state = {
     effects: [] as PresentationEffectRecord[],
+    steps: [] as PresentationStep[],
     detachers: [] as (() => void)[],
     muted: false,
     get highlightsCount() {
@@ -94,6 +107,9 @@ export function createPresentationManager(
     }
     if (outcome.ok) {
       state.effects.push({ effect_id: outcome.effect_id, tool });
+      if (tool !== "clear_presentation" && tool !== "open_link") {
+        state.steps.push({ tool, input });
+      }
       session.sendPresentationResult(call_id, true, { effect_id: outcome.effect_id });
     } else {
       session.sendPresentationResult(call_id, false, undefined, outcome.error, outcome.message);
@@ -103,6 +119,21 @@ export function createPresentationManager(
 
   const manager: PresentationManager = {
     effects: state.effects,
+    steps: state.steps,
+    async replayTo(index?: number) {
+      const upTo = index === undefined ? state.steps.length - 1 : index;
+      clearPresentation(ctx, "all");
+      state.effects.length = 0;
+      for (const step of state.steps.slice(0, upTo + 1)) {
+        const outcome = await dispatchPresentationCall(ctx, step.tool, step.input);
+        if (outcome.ok) state.effects.push({ effect_id: outcome.effect_id, tool: step.tool });
+      }
+      fire();
+    },
+    resetSteps() {
+      state.steps.length = 0;
+      fire();
+    },
     get highlightsCount() {
       return state.highlightsCount;
     },

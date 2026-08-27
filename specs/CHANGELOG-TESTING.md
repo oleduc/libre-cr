@@ -338,6 +338,15 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   `merge_base` (three-dot `origin/<base>...HEAD`), which the router always sets;
   the model's own `git_diff` calls can use it too. *Trigger: manual testing —
   reviewer spotted a file not in the PR.*
+- **Walkthroughs came back as text only.** With "use them sparingly" in the
+  prompt, a "walk me through the important parts" turn produced one `scroll_to`
+  and no highlights. **Fixed:** the prompt now says highlighting each described
+  part *is* the deliverable for walk-through / point-out / show requests.
+- **Presentation replay widget.** The model fires its highlights/scrolls while
+  streaming, so the reviewer only ever sees the end state — and testing
+  presentation required a paid model call each time. The presentation manager
+  now records each successful call as a step; the panel footer gets ◀ k/N ▶ and
+  Replay (clear, then re-apply steps 0..k). *Trigger: manual testing.*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*
