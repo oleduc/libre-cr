@@ -63,6 +63,7 @@ export default defineBackground(() => {
       } else if (m.t === "close") {
         ws?.close(m.code, m.reason);
       }
+      // "ping": nothing to do — receiving it is what keeps this worker alive.
     });
     port.onDisconnect.addListener(() => ws?.close());
   });

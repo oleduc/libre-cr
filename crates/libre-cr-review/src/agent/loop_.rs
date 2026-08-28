@@ -61,7 +61,11 @@ fn build_system_prompt(
          conversation may rest on tool results that were wrong or incomplete at \
          the time; when a fresh tool result disagrees with something said \
          before, the tool result wins — re-derive from it rather than repeating \
-         the earlier claim.",
+         the earlier claim. Ground every statement about the code in what you \
+         actually read this turn: before describing, naming or proposing changes \
+         to functions, classes or files, read them (get_pr_diff, read_file, \
+         grep). Never invent identifiers — if you have not read it, say so \
+         instead of guessing.",
     );
     if let Some(path) = worktree {
         s.push_str(&format!(

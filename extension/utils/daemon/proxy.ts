@@ -21,6 +21,8 @@ export interface PortLike {
 
 export const FETCH_MSG = "libre-cr/fetch";
 export const WS_PORT = "libre-cr/ws";
+/** Well under Chrome's ~30 s service-worker idle limit. */
+export const KEEPALIVE_MS = 20_000;
 
 export interface FetchRequestMsg {
   type: typeof FETCH_MSG;
@@ -36,7 +38,11 @@ export type FetchResponseMsg =
 export type WsClientMsg =
   | { t: "open"; url: string }
   | { t: "send"; data: string }
-  | { t: "close"; code?: number; reason?: string };
+  | { t: "close"; code?: number; reason?: string }
+  /** Keepalive: Chrome terminates an MV3 service worker after ~30 s without
+   *  events, port included; a model thinking or a long tool call is silent
+   *  for longer, and a dead worker drops the socket → the turn is cancelled. */
+  | { t: "ping" };
 export type WsServerMsg =
   | { t: "open" }
   | { t: "message"; data: string }
@@ -81,6 +87,7 @@ class ProxyWebSocket implements WSLike {
   onerror: ((ev: Event) => void) | null = null;
   onmessage: ((ev: MessageEvent) => void) | null = null;
   private port: PortLike;
+  private keepalive: ReturnType<typeof setInterval> | null = null;
 
   constructor(rt: RuntimeLike, url: string) {
     this.port = rt.connect({ name: WS_PORT });
@@ -105,6 +112,7 @@ class ProxyWebSocket implements WSLike {
     // Worker died or port dropped: surface as an abnormal close.
     this.port.onDisconnect.addListener(() => this.finish(1006, "background port disconnected"));
     this.post({ t: "open", url });
+    this.keepalive = setInterval(() => this.post({ t: "ping" }), KEEPALIVE_MS);
   }
   send(data: string): void {
     this.post({ t: "send", data });
@@ -112,6 +120,8 @@ class ProxyWebSocket implements WSLike {
   close(code?: number, reason?: string): void {
     if (this.readyState >= 2) return;
     this.readyState = 2;
+    if (this.keepalive) clearInterval(this.keepalive);
+    this.keepalive = null;
     this.post({ t: "close", code, reason });
   }
   private post(m: WsClientMsg): void {
@@ -124,6 +134,8 @@ class ProxyWebSocket implements WSLike {
   private finish(code: number, reason: string): void {
     if (this.readyState === 3) return;
     this.readyState = 3;
+    if (this.keepalive) clearInterval(this.keepalive);
+    this.keepalive = null;
     try {
       this.port.disconnect();
     } catch {
