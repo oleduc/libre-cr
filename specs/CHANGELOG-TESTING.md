@@ -388,6 +388,12 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   the reviewer clicks; opening from the footer goes straight to the controls.
   Live effects never scroll.
   *Trigger: manual testing — "timing is brutal", "the AI's text should be there".*
+- **A daemon dying mid-answer looked like an empty answer.** `AskSession`
+  resolved a WebSocket close after open as a normal completion even when no
+  `done` frame arrived, so the panel showed "A:" with nothing and no error. Now
+  a close without `done` rejects ("connection closed before the answer
+  completed"); the export marks cancelled/failed turns. *Trigger: manual testing
+  — the daemon was reaped by the launcher mid-turn (see supervisor lifetime).*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

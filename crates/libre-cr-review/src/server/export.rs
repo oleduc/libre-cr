@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub use libre_cr_common::http_api::{ExportResponse, GithubInlineComment, GithubReviewStructure};
 
 use crate::error::Result;
+use crate::storage::TurnStatus;
 use crate::storage::{Session, Severity, Store, ToolTrace, Turn, TurnKind};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,9 +94,15 @@ pub async fn build_export(
                     if t.kind != TurnKind::Question {
                         continue;
                     }
+                    let status_note = match t.status {
+                        TurnStatus::Ok => "",
+                        TurnStatus::Cancelled => " _(turn cancelled — no answer)_",
+                        TurnStatus::Error => " _(turn failed)_",
+                    };
                     md.push_str(&format!(
-                        "### Q: {}\n\nA: {}\n\n",
+                        "### Q: {}\n\nA:{} {}\n\n",
                         t.question.clone().unwrap_or_default(),
+                        status_note,
                         t.answer.clone().unwrap_or_default()
                     ));
                     let traces = store.list_traces(&t.turn_id).await?;

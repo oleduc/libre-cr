@@ -113,4 +113,14 @@ describe("AskSession", () => {
     });
     await p;
   });
+
+  it("a close after open but before `done` rejects instead of looking finished", async () => {
+    mock = new MockWS();
+    const sess = new AskSession("http://127.0.0.1:5", "tk", "sid", { wsFactory: () => mock! });
+    const opening = sess.open({ question: "q", selection: null } as never);
+    mock.fireOpen();
+    mock.fireMessage({ type: "text_delta", text: "partial…" });
+    mock.close(); // daemon died mid-stream
+    await expect(opening).rejects.toThrow(/closed before the answer completed/);
+  });
 });

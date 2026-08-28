@@ -127,6 +127,7 @@ export class AskSession {
           settle(e instanceof Error ? e : new Error(String(e)));
         }
       };
+      let finished = false; // `done` or `error` frame seen
       ws.onmessage = (ev: MessageEvent) => {
         const raw = typeof ev.data === "string" ? ev.data : String(ev.data);
         const frame = parseServerFrame(raw);
@@ -136,8 +137,10 @@ export class AskSession {
         }
         this.deliver(frame);
         if (frame.type === "done") {
+          finished = true;
           settle();
         } else if (frame.type === "error") {
+          finished = true;
           settle(new Error(frame.message));
         }
       };
@@ -146,8 +149,18 @@ export class AskSession {
       };
       ws.onclose = (ev: CloseEvent) => {
         for (const h of this.closeHandlers) h(ev.reason);
-        // If we never got `done`, treat as failure.
-        settle(this.opened ? undefined : new Error("websocket closed before init"));
+        // A close without `done` is a failure whether or not the socket had
+        // opened: a daemon dying mid-stream used to look like a finished turn
+        // with an empty answer.
+        if (!finished) {
+          settle(
+            new Error(
+              this.opened
+                ? "connection closed before the answer completed (daemon stopped?)"
+                : "websocket closed before init",
+            ),
+          );
+        }
       };
     });
   }
