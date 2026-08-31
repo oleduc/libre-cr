@@ -49,18 +49,31 @@ export async function selectionFromDiffHash(
   return null;
 }
 
-/** Follow GitHub's own selection: parse the current hash now and on every
- *  hashchange. Returns a cleanup function. */
+/** Follow GitHub's own selection: parse the current hash now, on every
+ *  hashchange, and shortly after any click — GitHub sets the hash through
+ *  history.pushState, which fires no hashchange event. Returns a cleanup
+ *  function. */
 export function watchGithubLineSelection(
   onSelect: (sel: Selection) => void,
   win: Window = window,
 ): () => void {
+  let last = "";
   const apply = () => {
-    void selectionFromDiffHash(win.location.hash, win.document).then((sel) => {
+    const hash = win.location.hash;
+    if (hash === last) return;
+    last = hash;
+    void selectionFromDiffHash(hash, win.document).then((sel) => {
       if (sel) onSelect(sel);
     });
   };
+  const afterClick = () => {
+    win.setTimeout(apply, 150);
+  };
   win.addEventListener("hashchange", apply);
+  win.document.addEventListener("click", afterClick, true);
   if (win.location.hash) apply();
-  return () => win.removeEventListener("hashchange", apply);
+  return () => {
+    win.removeEventListener("hashchange", apply);
+    win.document.removeEventListener("click", afterClick, true);
+  };
 }

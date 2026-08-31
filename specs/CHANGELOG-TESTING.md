@@ -401,7 +401,11 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   (digest scheme verified live), so `watchGithubLineSelection` decodes
   hashchange events into line/range selections — multi-line selection for
   free, no gesture ownership. Direct cell clicks and cmd-click symbols still
-  work. *Trigger: manual testing — "can we hook into GitHub's selection?".*
+  work. Follow-up: GitHub sets the hash via history.pushState (no hashchange
+  event), and the legacy shift-click branch was overwriting the range with
+  {last,last} — the watcher now re-checks the hash after every click and the
+  pseudo-range branch is gone. *Trigger: manual testing — "can we hook into
+  GitHub's selection?"; range showed the last-clicked line twice.*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

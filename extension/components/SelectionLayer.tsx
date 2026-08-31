@@ -59,15 +59,9 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
           }
         }
       }
-      if (ev.shiftKey) {
-        onSelect({
-          kind: "range",
-          file: hit.file,
-          start_line: hit.line,
-          end_line: hit.line,
-        });
-        return;
-      }
+      // Shift-click is GitHub's range gesture; the hash watcher below turns
+      // it into a real range — a local {n,n} pseudo-range would overwrite it.
+      if (ev.shiftKey) return;
       onSelect({ kind: "line", file: hit.file, line: hit.line });
     };
     document.addEventListener("click", click, true);
