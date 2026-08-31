@@ -394,6 +394,14 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   a close without `done` rejects ("connection closed before the answer
   completed"); the export marks cancelled/failed turns. *Trigger: manual testing
   — the daemon was reaped by the launcher mid-turn (see supervisor lifetime).*
+- **Selection now rides GitHub's own line selection.** Reviewers reach for
+  GitHub's native gesture (click a line number = one line, shift-click =
+  range, with native row highlighting); ours only understood clicks on cells.
+  GitHub publishes its selection in the URL hash as `#diff-<sha256(path)><R|L><a>[-<R|L><b>]`
+  (digest scheme verified live), so `watchGithubLineSelection` decodes
+  hashchange events into line/range selections — multi-line selection for
+  free, no gesture ownership. Direct cell clicks and cmd-click symbols still
+  work. *Trigger: manual testing — "can we hook into GitHub's selection?".*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

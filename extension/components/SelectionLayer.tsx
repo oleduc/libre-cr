@@ -9,6 +9,7 @@ import {
   hitTestLine,
   pickIdentifier,
 } from "../utils/github/diff";
+import { watchGithubLineSelection } from "../utils/github/gh-selection";
 
 export interface SelectionLayerProps {
   onSelect: (sel: Selection | null) => void;
@@ -70,7 +71,14 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
       onSelect({ kind: "line", file: hit.file, line: hit.line });
     };
     document.addEventListener("click", click, true);
-    return () => document.removeEventListener("click", click, true);
+    // GitHub's own gesture: line-number click = one line, shift-click = a
+    // range, both published through the URL hash. Riding it gives multi-line
+    // selection for free, with GitHub's native row highlight as feedback.
+    const unwatch = watchGithubLineSelection(onSelect);
+    return () => {
+      document.removeEventListener("click", click, true);
+      unwatch();
+    };
   }, [enabled, onSelect]);
   return null;
 }
