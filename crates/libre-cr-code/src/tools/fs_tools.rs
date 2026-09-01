@@ -16,7 +16,7 @@ impl Tool for ReadFile {
         "read_file"
     }
     fn description(&self) -> &'static str {
-        "Read a file from the working tree or from a specific git ref."
+        "Read a file from the working tree or from a specific git ref. Each content line is prefixed with its 1-based line number ('   38 | ...') so line references are exact."
     }
     fn input_schema(&self) -> Value {
         json!({
@@ -61,17 +61,18 @@ impl Tool for ReadFile {
             };
             let text = String::from_utf8_lossy(&bytes).into_owned();
             let total_lines = text.lines().count() as u64;
-            let content = if start_line.is_some() || end_line.is_some() {
-                let start = start_line.unwrap_or(1).saturating_sub(1) as usize;
-                let end = end_line.unwrap_or(total_lines) as usize;
-                text.lines()
-                    .skip(start)
-                    .take(end.saturating_sub(start))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            } else {
-                text
-            };
+            let start = start_line.unwrap_or(1).max(1) as usize;
+            let end = end_line.unwrap_or(total_lines).max(start_line.unwrap_or(1)) as usize;
+            // Numbered so the model never has to count lines in a blob — a
+            // reviewer's "line 38" and the model's must be the same line.
+            let content = text
+                .lines()
+                .enumerate()
+                .skip(start - 1)
+                .take(end.saturating_sub(start - 1))
+                .map(|(i, line)| format!("{:>5} | {}", i + 1, line))
+                .collect::<Vec<_>>()
+                .join("\n");
 
             Ok(json!({
                 "ok": true,

@@ -14,6 +14,8 @@ export type Turn =
   | {
       kind: "qa";
       id: string;
+      /** The daemon's id for this turn (from `done`, or restored history). */
+      daemonTurnId?: string;
       question: string;
       /** The selection the question was asked about, e.g. "src/a.ts:34-36". */
       sel?: string;

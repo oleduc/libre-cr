@@ -9,17 +9,24 @@ pub enum Selection {
     Line {
         file: String,
         line: u32,
+        /// The selected line's text, captured from the diff by the extension.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
     Range {
         file: String,
         start_line: u32,
         end_line: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
     Symbol {
         file: String,
         line: u32,
         column: u32,
         identifier: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
 }
 
@@ -42,6 +49,7 @@ mod tests {
         let s = Selection::Line {
             file: "src/auth.ts".into(),
             line: 42,
+            text: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Selection = serde_json::from_str(&json).unwrap();
@@ -56,6 +64,7 @@ mod tests {
             line: 42,
             column: 8,
             identifier: "bcryptHash".into(),
+            text: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Selection = serde_json::from_str(&json).unwrap();

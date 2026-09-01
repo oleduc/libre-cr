@@ -13,10 +13,10 @@ describe("history restore", () => {
     ];
     const turns = turnsFromSession(rows);
     expect(turns).toEqual([
-      { kind: "qa", id: "t1", question: "why?", sel: "a.rs:3", answer: "because.",
-        collapsed: true, error: undefined },
-      { kind: "qa", id: "t2", question: "and?", sel: undefined, answer: "",
-        collapsed: true, error: "turn cancelled — no answer" },
+      { kind: "qa", id: "t1", daemonTurnId: "t1", question: "why?", sel: "a.rs:3",
+        answer: "because.", collapsed: true, error: undefined },
+      { kind: "qa", id: "t2", daemonTurnId: "t2", question: "and?", sel: undefined,
+        answer: "", collapsed: true, error: "turn cancelled — no answer" },
       { kind: "note", id: "t3", noteId: "t3", content: "check this", severity: "warning" },
     ]);
   });

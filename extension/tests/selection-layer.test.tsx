@@ -44,7 +44,7 @@ describe("SelectionLayer — GitHub React 'changes' UI", () => {
     const onSelect = vi.fn<(s: Selection | null) => void>();
     render(<SelectionLayer onSelect={onSelect} />);
     fireEvent.click(table.querySelector("td.diff-text-cell")!);
-    expect(onSelect).toHaveBeenCalledWith({ kind: "line", file: "src/b.rs", line: 8 });
+    expect(onSelect).toHaveBeenCalledWith({ kind: "line", file: "src/b.rs", line: 8, text: "let x = 1;" });
   });
 });
 
@@ -60,7 +60,7 @@ describe("SelectionLayer — click scoping (I14)", () => {
     render(<SelectionLayer onSelect={onSelect} />);
 
     fireEvent.click(container.querySelector("td.blob-num")!);
-    expect(onSelect).toHaveBeenCalledWith({ kind: "line", file: "src/a.ts", line: 3 });
+    expect(onSelect).toHaveBeenCalledWith({ kind: "line", file: "src/a.ts", line: 3, text: "foolink" });
   });
 
   it("cmd-click on a diff code cell picks a symbol", () => {

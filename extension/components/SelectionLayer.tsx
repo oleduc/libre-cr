@@ -8,6 +8,7 @@ import {
   NUM_CELL_SEL,
   hitTestLine,
   pickIdentifier,
+  textOfLines,
 } from "../utils/github/diff";
 import { watchGithubLineSelection } from "../utils/github/gh-selection";
 
@@ -54,6 +55,7 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
               line: hit.line,
               column: col,
               identifier: ident,
+              text: textOfLines(hit.file, hit.line, hit.line),
             });
             return;
           }
@@ -62,7 +64,12 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
       // Shift-click is GitHub's range gesture; the hash watcher below turns
       // it into a real range — a local {n,n} pseudo-range would overwrite it.
       if (ev.shiftKey) return;
-      onSelect({ kind: "line", file: hit.file, line: hit.line });
+      onSelect({
+        kind: "line",
+        file: hit.file,
+        line: hit.line,
+        text: textOfLines(hit.file, hit.line, hit.line),
+      });
     };
     document.addEventListener("click", click, true);
     // GitHub's own gesture: line-number click = one line, shift-click = a

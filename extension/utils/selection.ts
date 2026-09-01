@@ -1,14 +1,15 @@
 // Selection model. Mirrors `libre-cr-common::Selection`.
 
 export type Selection =
-  | { kind: "line"; file: string; line: number }
-  | { kind: "range"; file: string; start_line: number; end_line: number }
+  | { kind: "line"; file: string; line: number; text?: string }
+  | { kind: "range"; file: string; start_line: number; end_line: number; text?: string }
   | {
       kind: "symbol";
       file: string;
       line: number;
       column: number;
       identifier: string;
+      text?: string;
     };
 
 export function selectionFile(s: Selection): string {

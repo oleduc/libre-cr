@@ -25,6 +25,12 @@ export interface AskInit {
    * instead of executing it (see `utils/presentation/index.ts`).
    */
   mute_presentations?: boolean;
+  /**
+   * Daemon turn ids whose tool results should be replayed at full fidelity
+   * for this ask — the turns the reviewer has expanded in the panel. Ids not
+   * belonging to the session are ignored by the daemon.
+   */
+  context_turn_ids?: string[];
 }
 
 export interface UsageTally {

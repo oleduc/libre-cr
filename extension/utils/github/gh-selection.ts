@@ -6,7 +6,7 @@
 // decodes with no scraping: hash → path via the rendered diff containers.
 
 import type { Selection } from "../selection";
-import { FILE_CONTAINER_SEL, filePathOf } from "./diff";
+import { FILE_CONTAINER_SEL, filePathOf, textOfLines } from "./diff";
 
 const DIFF_HASH = /^#?diff-([0-9a-f]{64})[RL](\d+)(?:-[RL](\d+))?$/;
 
@@ -41,10 +41,17 @@ export async function selectionFromDiffHash(
     const a = Number(aRaw);
     const b = bRaw ? Number(bRaw) : a;
     if (!Number.isFinite(a) || a <= 0) return null;
+    const [lo, hi] = [Math.min(a, b), Math.max(a, b)];
     if (b !== a) {
-      return { kind: "range", file, start_line: Math.min(a, b), end_line: Math.max(a, b) };
+      return {
+        kind: "range",
+        file,
+        start_line: lo,
+        end_line: hi,
+        text: textOfLines(file, lo, hi, root),
+      };
     }
-    return { kind: "line", file, line: a };
+    return { kind: "line", file, line: a, text: textOfLines(file, a, a, root) };
   }
   return null;
 }

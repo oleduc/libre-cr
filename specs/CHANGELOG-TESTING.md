@@ -187,6 +187,37 @@ beyond what either certification round reviewed.
   previous run's endpoint file instantly; the file is now removed before spawning
   so the banner reports the fresh port.
   *Trigger: same session — banner showed a dead port. Specs: 08 § First-Run Flow.*
+- **History replay carries recent tool results.** Replayed history was Q/A prose
+  only, so a follow-up question lost the evidence its parent turn was grounded
+  in and the model paraphrased from memory — in one traced turn it invented
+  `_is_ambiguous` / `AmbiguousStorageError` (identifiers that exist nowhere)
+  while the correct name sat in history prose. The last 2 turns now replay
+  their tool results verbatim (20k chars/result, 40k/turn caps); older turns
+  get a stub naming the tools used ("outputs no longer in context; re-read
+  before citing"), and the system prompt now requires every cited identifier
+  and file:line to appear verbatim in a currently visible tool result.
+  *Trigger: manual testing on PR #459 — fabricated identifiers in a follow-up
+  answer; diagnosed from `tool_traces`: the turn read only `retry.py` yet
+  described `single_use_store.py` internals. Specs: 04 § Agent Loop.*
+- **Copy from a rendered answer copies markdown.** Selecting text in the
+  rendered panel and copying now serializes the selected fragment back to
+  markdown (`fragmentToMarkdown`: emphasis, inline/fenced code with language,
+  links, lists, tables, blockquotes, headings, task-list boxes) into
+  `text/plain`, keeping the HTML flavor for rich-text targets. The sanitizer
+  now preserves `language-*` classes on `<code>` so fences round-trip.
+  *Trigger: manual testing — pasting a copied answer into a GitHub comment
+  lost all formatting. Specs: 05 § Q&A Panel.*
+- **Expanded turns ride along as context.** `AskInit` gained optional
+  `context_turn_ids`: the panel sends the daemon ids of every turn the
+  reviewer has left expanded, and the daemon replays those turns' tool
+  results at full fidelity (in addition to the recency floor, capped at 5
+  full-fidelity turns, oldest demoted to stubs first). Ids are matched only
+  against the session's own turns, so a foreign id is inert. Restored turns
+  carry their daemon id; live turns learn theirs from the `done` frame.
+  Field is `#[serde(default)]` — older clients are unaffected.
+  *Trigger: manual testing follow-up on the fabricated-identifier diagnosis —
+  re-expanding an old turn is the natural "I'm asking about this" gesture.
+  Specs: 04 § Agent Loop; 05 § Q&A Panel.*
 
 ---
 

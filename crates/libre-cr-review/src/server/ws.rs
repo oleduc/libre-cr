@@ -248,6 +248,7 @@ async fn handle_ws(state: AppState, session_id: String, ws: WebSocket) -> Result
         question: init.question.clone(),
         selection: init.selection.clone(),
         verb: init.verb.clone(),
+        context_turn_ids: init.context_turn_ids.clone(),
     };
     // Clone the bits we'll need on the cancellation arm before run_turn
     // borrows them.
@@ -255,6 +256,7 @@ async fn handle_ws(state: AppState, session_id: String, ws: WebSocket) -> Result
         question: init.question,
         selection: init.selection,
         verb: init.verb,
+        context_turn_ids: init.context_turn_ids,
     };
 
     let agent_fut = run_turn(&ctx, input, sink.as_ref());

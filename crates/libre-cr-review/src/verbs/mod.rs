@@ -289,6 +289,7 @@ mod tests {
             line: 1,
             column: 0,
             identifier: "foo".into(),
+            text: None,
         };
         validate_selection("find_callers", Some(&sel)).unwrap();
     }
@@ -298,6 +299,7 @@ mod tests {
         let sel = Selection::Line {
             file: "a.rs".into(),
             line: 1,
+            text: None,
         };
         assert!(validate_selection("show_history", Some(&sel)).is_err());
     }
@@ -308,6 +310,7 @@ mod tests {
             file: "a.rs".into(),
             start_line: 1,
             end_line: 5,
+            text: None,
         };
         validate_selection("show_history", Some(&sel)).unwrap();
     }

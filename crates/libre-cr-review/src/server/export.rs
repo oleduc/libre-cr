@@ -174,11 +174,12 @@ pub async fn build_export(
 fn format_anchor(sel: &libre_cr_common::Selection) -> String {
     use libre_cr_common::Selection::*;
     match sel {
-        Line { file, line } => format!("{file}:{line}"),
+        Line { file, line, .. } => format!("{file}:{line}"),
         Range {
             file,
             start_line,
             end_line,
+            ..
         } => format!("{file}:{start_line}-{end_line}"),
         Symbol {
             file,
@@ -192,7 +193,7 @@ fn format_anchor(sel: &libre_cr_common::Selection) -> String {
 fn anchor_path_line(sel: &libre_cr_common::Selection) -> (String, Option<u32>) {
     use libre_cr_common::Selection::*;
     match sel {
-        Line { file, line } => (file.clone(), Some(*line)),
+        Line { file, line, .. } => (file.clone(), Some(*line)),
         Range {
             file, start_line, ..
         } => (file.clone(), Some(*start_line)),

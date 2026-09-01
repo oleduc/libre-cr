@@ -23,6 +23,11 @@ pub struct AskInit {
     /// can't emit `presentation_call` frames for this turn.
     #[serde(default)]
     pub mute_presentations: bool,
+    /// Turn ids whose tool results should be replayed at full fidelity for
+    /// this turn (the panel sends the turns the reviewer has expanded).
+    /// Ids that don't belong to the session are ignored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_turn_ids: Vec<String>,
 }
 
 /// Usage tally returned at the end of a turn.
@@ -102,6 +107,7 @@ mod tests {
             selection: None,
             verb: Some("find_callers".into()),
             mute_presentations: false,
+            context_turn_ids: vec!["t_1".into()],
         };
         let s = serde_json::to_string(&a).unwrap();
         let b: AskInit = serde_json::from_str(&s).unwrap();
@@ -115,6 +121,7 @@ mod tests {
         // Older clients omit the field entirely.
         let b: AskInit = serde_json::from_str(r#"{"question":"q"}"#).unwrap();
         assert!(!b.mute_presentations);
+        assert!(b.context_turn_ids.is_empty());
         let b: AskInit =
             serde_json::from_str(r#"{"question":"q","mute_presentations":true}"#).unwrap();
         assert!(b.mute_presentations);

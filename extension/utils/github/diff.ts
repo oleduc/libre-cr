@@ -155,6 +155,29 @@ export async function ensureFileRendered(
   return false;
 }
 
+/** The code text of `file`'s lines `start..=end` as rendered in the diff,
+ *  without our caption chips; undefined when nothing is rendered. Capped so a
+ *  huge drag never bloats the question payload. */
+export function textOfLines(
+  file: string,
+  start: number,
+  end: number,
+  root: ParentNode = globalThis.document,
+): string | undefined {
+  const out: string[] = [];
+  for (let l = start; l <= Math.min(end, start + 120); l++) {
+    const row = findRow(file, l, root);
+    const cell = row?.querySelector<HTMLElement>(CODE_CELL_SEL);
+    if (!cell) continue;
+    const clone = cell.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll(".libre-cr-label").forEach((c) => c.remove());
+    out.push(clone.textContent ?? "");
+  }
+  if (out.length === 0) return undefined;
+  const text = out.join("\n");
+  return text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
+}
+
 /**
  * Scroll `el` into view and make sure it stayed there. A `smooth` scroll is
  * cancelled by any other scroll or layout shift, and GitHub's virtualized diff

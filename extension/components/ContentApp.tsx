@@ -39,6 +39,7 @@ export function turnsFromSession(rows: SessionTurnRow[]): Turn[] {
     out.push({
       kind: "qa",
       id: r.turn_id,
+      daemonTurnId: r.turn_id,
       question: r.question ?? "",
       sel,
       answer: r.answer ?? "",

@@ -34,6 +34,11 @@ const newTurnId = () => `t_${++turnSeq}_${Date.now()}`;
 export function QaPanel(props: QaPanelProps) {
   const [verbs, setVerbs] = useState<VerbDescriptor[]>([]);
   const [turns, setTurns] = useState<Turn[]>(props.initialTurns ?? []);
+  // Current turns, readable inside runAsk without adding a state dep.
+  const turnsRef = useRef<Turn[]>(props.initialTurns ?? []);
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
   // A late-arriving restore only fills an untouched conversation.
   const restoredRef = useRef(false);
   useEffect(() => {
@@ -196,6 +201,15 @@ export function QaPanel(props: QaPanelProps) {
       setTourArmed(false);
       autoOpenedRef.current = false;
       const turnId = newTurnId();
+      // Turns the reviewer left expanded carry their tool results into this
+      // ask: their daemon ids go on the wire and the daemon replays those
+      // turns at full fidelity.
+      const contextTurnIds: string[] = [];
+      for (const t of turnsRef.current) {
+        if (t.kind === "qa" && t.collapsed !== true && t.daemonTurnId) {
+          contextTurnIds.push(t.daemonTurnId);
+        }
+      }
       // Mark earlier qa turns collapsed.
       setTurns((all) =>
         all.map((t) => (t.kind === "qa" ? { ...t, collapsed: true } : t)),
@@ -234,6 +248,15 @@ export function QaPanel(props: QaPanelProps) {
           ),
         );
       });
+      session.on("done", (f) => {
+        // Remember the daemon's id so a later ask can name this turn in
+        // context_turn_ids while it stays expanded.
+        setTurns((all) =>
+          all.map((t) =>
+            t.kind === "qa" && t.id === turnId ? { ...t, daemonTurnId: f.turn_id } : t,
+          ),
+        );
+      });
       session.on("tool_result", (f) => {
         setTurns((all) =>
           all.map((t) => {
@@ -254,6 +277,7 @@ export function QaPanel(props: QaPanelProps) {
           selection: props.selection ?? undefined,
           verb,
           mute_presentations: presentationsMuted || undefined,
+          context_turn_ids: contextTurnIds.length ? contextTurnIds : undefined,
         });
       } catch (e) {
         const msg = (e as Error).message;
