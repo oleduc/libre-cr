@@ -198,16 +198,16 @@ A small subsystem in the extension that:
 A per-session **🔇 mute** toggle suppresses presentations for the current session. It is not cosmetic: when set, the extension sends `mute_presentations: true` in the WS `AskInit` frame, and the daemon responds by not registering the presentation tools for that turn at all — so the model never emits `presentation_call` frames while muted. As defense in depth the handler also gates locally: any stray `presentation_call` arriving during a muted session is answered with `{ ok: false, error: "presentation_muted" }` rather than executed, so the agent turn still completes. The mute state is persisted per session in `browser.storage.local`.
 
 Effects are cleared on:
-- User clicks "Clear highlights" in the Q&A panel footer.
+- User clicks "Clear all effects" in the Q&A panel footer.
 - User submits the next question and the "auto-clear" setting is on (default).
 - The user closes the Q&A panel.
 - Content script invalidation / navigation away.
 
-The Q&A panel gains a footer showing the count of currently-applied effects and a `Clear highlights` button:
+The Q&A panel gains a footer showing the count of currently-applied effects and a `Clear all effects` button:
 
-```
+```text
 ─────────────────────────────────────────
- 2 highlights · 1 annotation · [Clear highlights]
+ 2 highlights · 1 annotation · [Clear all effects]
 ─────────────────────────────────────────
 ```
 

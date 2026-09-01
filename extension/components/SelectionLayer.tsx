@@ -37,16 +37,28 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
       if (!hit) return;
       // Cmd-click → symbol; shift-click → range start/end; plain click → line.
       if (ev.metaKey || ev.ctrlKey) {
-        // Try to pick the identifier from the line text.
-        const td = (target as Element | null)?.closest?.("tr")?.querySelector?.(CODE_CELL_SEL);
+        // Try to pick the identifier from the line text — from the *clicked*
+        // code cell when there is one (a React replacement row has a left and
+        // a right code cell; the row's first match would read deleted text).
+        const td =
+          el.closest(CODE_CELL_SEL) ??
+          (target as Element | null)?.closest?.("tr")?.querySelector?.(CODE_CELL_SEL);
         if (td) {
           const text = td.textContent ?? "";
           // Best-effort column: use mouse offset proportional to text length.
           const rect = (td as HTMLElement).getBoundingClientRect();
-          const col = Math.max(
-            0,
-            Math.min(text.length - 1, Math.floor(((ev.clientX - rect.left) / rect.width) * text.length)),
-          );
+          // A zero-width rect (hidden cell, jsdom) would make the ratio NaN
+          // and silently disable symbol picking — fall back to column 0.
+          const col =
+            rect.width > 0
+              ? Math.max(
+                  0,
+                  Math.min(
+                    text.length - 1,
+                    Math.floor(((ev.clientX - rect.left) / rect.width) * text.length),
+                  ),
+                )
+              : 0;
           const ident = pickIdentifier(text, col);
           if (ident) {
             onSelect({

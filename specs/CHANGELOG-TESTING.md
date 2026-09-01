@@ -218,13 +218,30 @@ beyond what either certification round reviewed.
   *Trigger: manual testing follow-up on the fabricated-identifier diagnosis —
   re-expanding an old turn is the natural "I'm asking about this" gesture.
   Specs: 04 § Agent Loop; 05 § Q&A Panel.*
+- **CodeRabbit review round on PR #1.** Fixes: the `start` endpoint watcher
+  only announces an endpoint file written after this start (a stale file that
+  survived a failed removal printed a dead port); clone + prepare share one
+  end-to-end 10-minute budget matching the UI's polling window; the stored-diff
+  `get_pr_diff` fallback honors `paths`; `POST /v1/provider/models` never sends
+  the *stored* key to an endpoint other than the one it was saved with (a
+  candidate endpoint change requires its own key); the relayed `fetch` forwards
+  a `Request` input's method/headers/body (was relayed as a bare GET); the
+  export tool-log flag is markdown-only and the checkbox disables for GitHub
+  reviews; cmd-click symbol picking reads the *clicked* code cell on React
+  replacement rows; `open_link`'s description now states its real contract;
+  "Clear highlights" is now "Clear all effects" everywhere; spec wording fixed
+  (pairing auth exception, origin-check claims dropped for diagnostics-only,
+  MD040 fence). The stale config-migration comment was verified already fixed.
+  *Trigger: PR #1 review comments.*
 
 ---
 
-## Still open / deferred
+## Findings log (certification flags and field bugs, in order found)
 
-Known-imperfect items the certifications flagged that were **intentionally not
-fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
+Every item the certification rounds or manual testing flagged, kept with its
+full diagnosis. Most were fixed in place and say so (**Fixed**, or describe the
+shipped change); the **Still open / deferred** block at the end collects what
+remains deliberately unfixed. None of the open items block the demo path.
 
 - **BUG — content-script CORS: the extension cannot reach the daemon from a PR
   page.** `05-browser-extension.md` § Transport from a Content Script assumes a
@@ -452,6 +469,11 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   markers) — and a session with no history starts closed behind the floating
   CR button; errors and not-paired still auto-open. *Trigger: manual testing —
   "refresh wipes the conversation".*
+### Still open / deferred
+
+- **Reloading the extension orphans open tabs' content scripts** (also logged
+  above with its diagnosis) — detection of `runtime` loss and a "reload this
+  page" notice are still to do.
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

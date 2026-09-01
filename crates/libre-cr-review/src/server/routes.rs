@@ -507,7 +507,19 @@ async fn provider_models(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<ModelsResponse>> {
     let mut cfg = state.config.snapshot().await;
+    let saved_endpoint = cfg.provider.endpoint.clone();
     apply_provider_patch(&mut cfg, &body, &state.install_key)?;
+    // The stored key is only ever sent to the endpoint it was saved with. A
+    // candidate pointing anywhere else must bring its own key (env-var keys,
+    // which the user controls, still apply) — otherwise a paired caller
+    // could steer the saved key to an arbitrary host and read it there.
+    let explicit_key = body
+        .get("provider")
+        .and_then(|p| p.get("api_key"))
+        .is_some();
+    if cfg.provider.endpoint != saved_endpoint && !explicit_key {
+        cfg.provider.api_key_enc = String::new();
+    }
     let provider = crate::provider::build_provider(&cfg, &state.install_key)?;
     let models = provider.list_models().await?;
     Ok(Json(ModelsResponse { models }))

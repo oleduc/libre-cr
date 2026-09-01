@@ -105,9 +105,12 @@ impl SessionStatusBoard {
     }
 }
 
-/// Deadline for the git-heavy code-daemon calls (`clone_repo`,
-/// `prepare_worktree`). A first clone of a large repo takes minutes; the
-/// default 10 s per-call timeout is for tool calls like `grep`.
+/// End-to-end budget for the git-heavy part of preparation (`clone_repo`
+/// then `prepare_worktree` share it). A first clone of a large repo takes
+/// minutes; the default 10 s per-call timeout is for tool calls like `grep`.
+/// One shared budget keeps the daemon's deadline aligned with the
+/// extension's ~10-minute status polling — two sequential 10-minute calls
+/// would outlive the UI's patience.
 const GIT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Inputs for one orchestration run.
@@ -130,6 +133,9 @@ pub async fn prepare_session(
         board.set(&input.session_id, status.clone()).await;
         return Ok(status);
     };
+
+    // One budget across clone + prepare (see GIT_CALL_TIMEOUT).
+    let git_deadline = std::time::Instant::now() + GIT_CALL_TIMEOUT;
 
     // discover_repo
     let discover = match code
@@ -161,7 +167,7 @@ pub async fn prepare_session(
             .call_with_timeout(
                 "clone_repo",
                 serde_json::json!({ "remote_url": remote_url }),
-                GIT_CALL_TIMEOUT,
+                git_deadline.saturating_duration_since(std::time::Instant::now()),
             )
             .await
         {
@@ -194,7 +200,11 @@ pub async fn prepare_session(
         "ref": input.pr_ref,
     });
     let prep = match code
-        .call_with_timeout("prepare_worktree", prep_input, GIT_CALL_TIMEOUT)
+        .call_with_timeout(
+            "prepare_worktree",
+            prep_input,
+            git_deadline.saturating_duration_since(std::time::Instant::now()),
+        )
         .await
     {
         Ok(v) => v,

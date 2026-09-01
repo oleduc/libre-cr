@@ -22,6 +22,11 @@ describe("ExportModal", () => {
     expect(buildExportBody("notes_only", "markdown", "any", true).filter).toMatchObject({
       include_tool_io: false,
     });
+    // Only the markdown export renders the log; a GitHub review must not
+    // accept the flag and silently drop it.
+    expect(buildExportBody("full_transcript", "github_review", "any", true).filter).toMatchObject({
+      include_tool_io: false,
+    });
   });
 
   it("buildExportBody encodes content and severity_min correctly", () => {

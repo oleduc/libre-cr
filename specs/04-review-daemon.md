@@ -21,7 +21,7 @@ If `libre-cr-code` is "an MCP server for any repo," `libre-cr-review` is "the as
 
 ## HTTP / WebSocket API (Extension Transport)
 
-All endpoints require `Authorization: Bearer <token>`. CORS is permissive (`*`): the bearer token is the security boundary, and a content script's requests carry the page origin (`https://github.com`), not the extension's, so an origin allowlist cannot work. All responses are JSON unless noted.
+All endpoints except `POST /v1/pair` (code redemption — how the extension obtains a token; rate-limited) and `GET /v1/health` require `Authorization: Bearer <token>`. CORS is permissive (`*`): the bearer token is the security boundary, and a content script's requests carry the page origin (`https://github.com`), not the extension's, so an origin allowlist cannot work. All responses are JSON unless noted.
 
 ### Sessions
 
@@ -453,7 +453,7 @@ Pairing flow (first run):
 1. User installs extension and runs the daemon via `libre-cr start` (instructions in `08-distribution.md`).
 2. The user runs `libre-cr pair`, which issues a one-time code through the running daemon (`POST /v1/pair/issue`).
 3. Extension's options page accepts the pairing code (typed, or pre-filled from a pairing deep-link). On submit it hits `POST /v1/pair` with the code and its origin, and receives `{ token, extension_origin }`.
-4. Daemon persists the extension's origin to `review.toml` (diagnostics only — CORS does not key on it). Subsequent requests are authenticated by the token and origin-checked.
+4. Daemon persists the extension's origin to `review.toml` (diagnostics only — CORS does not key on it). Subsequent requests are authenticated by the bearer token alone; the recorded origin is never enforced.
 
 ## Concurrency and Cancellation
 

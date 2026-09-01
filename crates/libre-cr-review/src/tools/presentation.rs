@@ -69,7 +69,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "open_link".into(),
-            description: "Open an http(s) URL in a new tab. Not for local files.".into(),
+            description: "Open a link for the reviewer: an https URL, an http URL on 127.0.0.1, or a github.com-relative path (e.g. /owner/repo/pull/1/files). `target` defaults to \"tab\" (new browser tab); \"panel\" shows it inside the panel where the extension allows that. Not for local files.".into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties": {

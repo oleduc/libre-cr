@@ -61,15 +61,28 @@ export function daemonFetch(): typeof fetch {
   const rt = runtime();
   if (!rt) return globalThis.fetch.bind(globalThis);
   return async (input, init = {}) => {
+    // A `Request` input carries its own method/headers/body; `init` wins
+    // where both are present (fetch semantics). Without this, a POST built
+    // as `new Request(...)` was relayed as a bare GET.
+    const req = typeof input === "string" || input instanceof URL ? null : input;
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const headers: Record<string, string> = {};
-    new Headers(init.headers).forEach((v, k) => (headers[k] = v));
+    new Headers(init.headers ?? req?.headers).forEach((v, k) => (headers[k] = v));
+    const method = init.method ?? req?.method;
+    let reqBody = typeof init.body === "string" ? init.body : undefined;
+    if (reqBody === undefined && req && method && !["GET", "HEAD"].includes(method.toUpperCase())) {
+      try {
+        reqBody = await req.clone().text();
+      } catch {
+        // body stream already consumed — relay without one
+      }
+    }
     const msg: FetchRequestMsg = {
       type: FETCH_MSG,
       url,
-      method: init.method,
+      method,
       headers,
-      body: typeof init.body === "string" ? init.body : undefined,
+      body: reqBody,
     };
     const res = (await rt.sendMessage(msg)) as FetchResponseMsg | undefined;
     if (!res) throw new TypeError("background worker did not respond");

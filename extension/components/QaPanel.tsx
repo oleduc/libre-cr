@@ -562,7 +562,7 @@ export function QaPanel(props: QaPanelProps) {
           onClick={() => presentationRef.current.clearAll()}
           title="Remove highlights and annotations from the diff (the conversation stays)"
         >
-          Clear highlights
+          Clear all effects
         </button>
       </div>
       {error ? <div className="libre-cr-error">{error}</div> : null}

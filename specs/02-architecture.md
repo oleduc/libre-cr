@@ -183,7 +183,7 @@ To use the code daemon directly with no review-daemon involvement:
 
 - Daemon binds 127.0.0.1 on a port read from a config file (default ephemeral, written on startup).
 - Token authentication: daemon writes a 256-bit bearer token to `~/.config/libre-cr/token` (mode 0600). Extension reads it via the WXT options page on first use, stores it in `browser.storage.local`. Token is included as `Authorization: Bearer <token>` on every request.
-- Origin check: daemon rejects requests whose `Origin` header is not from a configured browser extension origin (set during the extension's first-run setup).
+- Origin recording: the extension origin learned at pairing is persisted for diagnostics only. It is never enforced — the bearer token is the sole request boundary (see the CORS bullet below).
 - CORS: permissive (`*`). The bearer token is the boundary; content-script requests carry the page origin under MV3, so an extension-origin allowlist would block the product.
 - One-shot requests use HTTP POST (init, export, list sessions). Streaming responses (ask) use WebSocket.
 - The WebSocket carries two distinct directions of streaming during a turn:

@@ -52,8 +52,10 @@ export function buildExportBody(
     filter: {
       include_thinking: content !== "notes_only",
       severity_min: severityMin === "any" ? null : severityMin,
-      // Debug log: every tool call's input and result. Only meaningful with context.
-      include_tool_io: includeToolIo && content !== "notes_only",
+      // Debug log: every tool call's input and result. Only meaningful with
+      // context, and only the markdown export renders it — a GitHub review
+      // must not silently drop a requested log.
+      include_tool_io: includeToolIo && content !== "notes_only" && format === "markdown",
     },
   };
 }
@@ -199,7 +201,7 @@ export function ExportModal({ client, sessionId, onClose }: ExportModalProps) {
               type="checkbox"
               data-testid="include-tool-io"
               checked={includeToolIo}
-              disabled={content === "notes_only"}
+              disabled={content === "notes_only" || format === "github_review"}
               onChange={(e) => setIncludeToolIo(e.target.checked)}
             />{" "}
             Include tool call log (every input and result — for debugging)

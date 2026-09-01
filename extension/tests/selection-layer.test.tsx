@@ -48,6 +48,34 @@ describe("SelectionLayer — GitHub React 'changes' UI", () => {
   });
 });
 
+describe("SelectionLayer — symbol pick uses the clicked cell", () => {
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = "";
+  });
+
+  it("cmd-click on the right code cell of a replacement row reads right-side text", () => {
+    const table = document.createElement("table");
+    table.setAttribute("aria-label", "Diff for: src/c.rs");
+    table.innerHTML =
+      '<tbody><tr class="diff-line-row">' +
+      '<td class="focusable-grid-cell new-diff-line-number" data-diff-side="left" data-line-number="4">4</td>' +
+      '<td class="diff-text-cell focusable-grid-cell" data-diff-side="left" data-line-number="4">old_name</td>' +
+      '<td class="focusable-grid-cell new-diff-line-number" data-diff-side="right" data-line-number="5">5</td>' +
+      '<td class="diff-text-cell focusable-grid-cell" data-diff-side="right" data-line-number="5">new_name</td>' +
+      "</tbody></tr>";
+    document.body.appendChild(table);
+    const onSelect = vi.fn<(s: Selection | null) => void>();
+    render(<SelectionLayer onSelect={onSelect} />);
+    const right = table.querySelector('td.diff-text-cell[data-diff-side="right"]')!;
+    fireEvent.click(right, { metaKey: true });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    const sel = onSelect.mock.calls[0]![0]!;
+    expect(sel.kind).toBe("symbol");
+    expect((sel as { identifier: string }).identifier).toBe("new_name");
+  });
+});
+
 describe("SelectionLayer — click scoping (I14)", () => {
   afterEach(() => {
     cleanup();
