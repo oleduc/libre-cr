@@ -129,9 +129,21 @@ export interface CreateSessionResponse {
   head_sha?: string | null;
 }
 
+/** One stored turn as `GET /v1/sessions/:id` serializes it. */
+export interface SessionTurnRow {
+  turn_id: string;
+  kind: "question" | "note";
+  status: "ok" | "cancelled" | "error";
+  question?: string;
+  answer?: string;
+  user_content?: string;
+  severity?: "info" | "suggestion" | "warning" | "critical";
+  selection?: unknown;
+}
+
 export interface GetSessionResponse {
   session: SessionSummary & { pr_data?: unknown; head_sha?: string | null };
-  turns: unknown[];
+  turns: SessionTurnRow[];
   worktree_ready: boolean;
   /** Worktree orchestration status; `error` is set when `state` is `failed`. */
   status?: { state?: unknown; error?: string | null; pending_action?: string | null } | null;

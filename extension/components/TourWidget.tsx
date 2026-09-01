@@ -4,6 +4,8 @@
 
 import type { PresentationStep } from "../utils/presentation";
 
+import { Markdown } from "./Markdown";
+
 export interface TourWidgetProps {
   steps: PresentationStep[];
   index: number;
@@ -89,7 +91,7 @@ export function TourWidget({
         {where ? <div className="libre-cr-tour-where">{where}</div> : null}
         {detail ? (
           <div className="libre-cr-tour-detail" data-testid="tour-detail">
-            {detail}
+            <Markdown text={detail} />
           </div>
         ) : null}
       </div>

@@ -79,6 +79,12 @@ test.describe("Q&A panel", () => {
       await page.goto(FIXTURE_PR_URL);
       const host = page.locator("#libre-cr-root");
       await expect(host).toHaveCount(1, { timeout: 5_000 });
+      // Fresh sessions start closed behind the CR button; open the panel.
+      await host.evaluate((el) => {
+        (el as HTMLElement).shadowRoot
+          ?.querySelector<HTMLButtonElement>(".libre-cr-reopen")
+          ?.click();
+      });
 
       // Wait for the panel to reach `ready` state (verbs bucket rendered).
       await expect
@@ -116,6 +122,12 @@ test.describe("Q&A panel", () => {
       await page.goto(FIXTURE_PR_URL);
       const host = page.locator("#libre-cr-root");
       await expect(host).toHaveCount(1, { timeout: 5_000 });
+      // Fresh sessions start closed behind the CR button; open the panel.
+      await host.evaluate((el) => {
+        (el as HTMLElement).shadowRoot
+          ?.querySelector<HTMLButtonElement>(".libre-cr-reopen")
+          ?.click();
+      });
 
       // Wait for ready.
       await expect
@@ -179,6 +191,12 @@ test.describe("Q&A panel", () => {
       await page.goto(FIXTURE_PR_URL);
       const host = page.locator("#libre-cr-root");
       await expect(host).toHaveCount(1, { timeout: 5_000 });
+      // Fresh sessions start closed behind the CR button; open the panel.
+      await host.evaluate((el) => {
+        (el as HTMLElement).shadowRoot
+          ?.querySelector<HTMLButtonElement>(".libre-cr-reopen")
+          ?.click();
+      });
       await expect
         .poll(
           async () =>

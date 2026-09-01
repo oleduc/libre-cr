@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+import { Markdown } from "./Markdown";
+
 export interface ToolTraceLite {
   call_id: string;
   name: string;
@@ -13,6 +15,8 @@ export type Turn =
       kind: "qa";
       id: string;
       question: string;
+      /** The selection the question was asked about, e.g. "src/a.ts:34-36". */
+      sel?: string;
       answer: string;
       thinking?: ToolTraceLite[];
       error?: string;
@@ -195,8 +199,15 @@ export function ConversationTurn({
   }
   return (
     <div className="libre-cr-turn" data-kind="qa" data-testid="qa-turn">
-      <div className="q">Q: {turn.question}</div>
-      <div className="a">{turn.answer || (turn.pending ? "…" : "")}</div>
+      <div className="q">
+        Q: {turn.question}
+        {turn.sel ? <span className="libre-cr-ref">{turn.sel}</span> : null}
+      </div>
+      {turn.answer ? (
+        <Markdown text={turn.answer} />
+      ) : (
+        <div className="a">{turn.pending ? "…" : ""}</div>
+      )}
       {turn.error ? <div className="libre-cr-error">{turn.error}</div> : null}
       {turn.thinking && turn.thinking.length > 0 ? (
         <details

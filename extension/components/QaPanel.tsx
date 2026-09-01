@@ -15,6 +15,8 @@ import { TourWidget } from "./TourWidget";
 export interface QaPanelProps {
   client: DaemonClient;
   sessionId: string;
+  /** Conversation restored from the daemon (page reload / reopened PR). */
+  initialTurns?: Turn[];
   prSlug: string;
   selection: Selection | null;
   onClearSelection: () => void;
@@ -31,7 +33,14 @@ const newTurnId = () => `t_${++turnSeq}_${Date.now()}`;
 
 export function QaPanel(props: QaPanelProps) {
   const [verbs, setVerbs] = useState<VerbDescriptor[]>([]);
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [turns, setTurns] = useState<Turn[]>(props.initialTurns ?? []);
+  // A late-arriving restore only fills an untouched conversation.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || !props.initialTurns?.length) return;
+    restoredRef.current = true;
+    setTurns((t) => (t.length === 0 ? props.initialTurns! : t));
+  }, [props.initialTurns]);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [effects, setEffects] = useState({ highlights: 0, annotations: 0, steps: 0 });
@@ -195,6 +204,7 @@ export function QaPanel(props: QaPanelProps) {
         kind: "qa",
         id: turnId,
         question: questionText,
+        sel: props.selection ? selectionLabel(props.selection) : undefined,
         answer: "",
         thinking: [],
         pending: true,

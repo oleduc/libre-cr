@@ -406,6 +406,21 @@ fixed** (or remain unscheduled). Recorded for honesty; none block the demo path.
   {last,last} — the watcher now re-checks the hash after every click and the
   pseudo-range branch is gone. *Trigger: manual testing — "can we hook into
   GitHub's selection?"; range showed the last-clicked line twice.*
+- **Panel UI round, after examining GitHub Copilot's "Explain" panel.** Worth
+  copying from it: markdown-rendered answers and per-exchange reference tokens;
+  not copied: its docked form factor (floating retained; docked/fixed modes for
+  small screens deferred). Added: sanitized markdown rendering (`marked` behind
+  an allowlist sanitizer — model output must never reach innerHTML raw), a
+  selection chip on each question ("src/a.rs:34-36"), and a natively resizable
+  shell (CSS `resize: both`, size persisted per PR next to the drag position).
+  *Trigger: manual testing — plain-text answers, fixed panel size.*
+- **Conversation history now restores; empty panels stay closed.** The daemon
+  stored every turn (the export reads them) but the panel started empty on
+  every page load. It now rebuilds the conversation from `GET /v1/sessions/:id`
+  (collapsed Q&As with selection chips, editable notes, cancelled/failed
+  markers) — and a session with no history starts closed behind the floating
+  CR button; errors and not-paired still auto-open. *Trigger: manual testing —
+  "refresh wipes the conversation".*
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*

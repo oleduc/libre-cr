@@ -49,6 +49,39 @@ export function Shell({ prUrl, children, initialPosition }: ShellProps) {
     };
   }, [prUrl]);
 
+  // Persist the size after a native CSS resize (the corner handle bypasses
+  // our drag logic entirely). Debounced; the first observation on mount is
+  // skipped so merely opening the panel writes nothing.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let first = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const ro = new ResizeObserver(() => {
+      if (first) {
+        first = false;
+        return;
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const rect = el.getBoundingClientRect();
+        const next: PanelGeometry = {
+          x: rect.left,
+          y: rect.top,
+          width: rect.width,
+          height: rect.height,
+        };
+        setPos(next);
+        void setPanelPosition(prUrl, next);
+      }, 400);
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      if (timer) clearTimeout(timer);
+    };
+  }, [prUrl]);
+
   // Remove any in-flight drag listeners if the tree unmounts mid-drag.
   useEffect(() => {
     return () => {

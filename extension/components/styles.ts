@@ -24,7 +24,26 @@ export const PANEL_STYLES = `
 .libre-cr-tour-body { padding: 12px 14px 14px; }
 .libre-cr-tour-title { font: 600 15px/1.3 system-ui, -apple-system, sans-serif; }
 .libre-cr-tour-where { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: #57606a; margin-top: 2px; }
-.libre-cr-tour-detail { font: 14px/1.5 system-ui, -apple-system, sans-serif; margin-top: 8px; white-space: pre-wrap; }
+.libre-cr-tour-detail { font: 14px/1.5 system-ui, -apple-system, sans-serif; margin-top: 8px; }
+.libre-cr-md { font: 13px/1.5 system-ui, -apple-system, sans-serif; word-break: break-word; }
+.libre-cr-md > :first-child { margin-top: 0; }
+.libre-cr-md > :last-child { margin-bottom: 0; }
+.libre-cr-md p, .libre-cr-md ul, .libre-cr-md ol, .libre-cr-md table, .libre-cr-md pre, .libre-cr-md blockquote { margin: 6px 0; }
+.libre-cr-md h1, .libre-cr-md h2, .libre-cr-md h3, .libre-cr-md h4 { font-size: 13px; margin: 10px 0 4px; }
+.libre-cr-md h1 { font-size: 15px; } .libre-cr-md h2 { font-size: 14px; }
+.libre-cr-md ul, .libre-cr-md ol { padding-left: 20px; }
+.libre-cr-md code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: #f6f8fa; padding: 1px 4px; border-radius: 4px; }
+.libre-cr-md pre { background: #f6f8fa; border-radius: 6px; padding: 8px 10px; overflow-x: auto; }
+.libre-cr-md pre code { background: none; padding: 0; }
+.libre-cr-md table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
+.libre-cr-md th, .libre-cr-md td { border: 1px solid #d0d7de; padding: 3px 8px; text-align: left; }
+.libre-cr-md th { background: #f6f8fa; font-weight: 600; }
+.libre-cr-md blockquote { border-left: 3px solid #d0d7de; padding-left: 8px; color: #57606a; }
+.libre-cr-md a { color: #0969da; }
+.libre-cr-ref {
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; background: #ddf4ff; color: #0969da;
+  border-radius: 10px; padding: 0 7px; margin-left: 6px; white-space: nowrap; font-weight: 400;
+}
 .libre-cr-reopen {
   position: fixed;
   right: 24px;
@@ -59,6 +78,11 @@ export const PANEL_STYLES = `
   font-size: 13px;
   max-height: 80vh;
   overflow: hidden;
+  resize: both;
+  min-width: 300px;
+  min-height: 220px;
+  max-width: 92vw;
+  max-height: 92vh;
 }
 .libre-cr-titlebar {
   background: #f6f8fa;

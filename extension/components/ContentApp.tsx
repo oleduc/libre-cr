@@ -10,6 +10,49 @@ import type { Selection } from "../utils/selection";
 import { PANEL_STYLES } from "./styles";
 import { QaPanel } from "./QaPanel";
 import { SelectionLayer } from "./SelectionLayer";
+import type { SessionTurnRow } from "../utils/daemon/frames";
+import { selectionLabel } from "../utils/selection";
+import type { Turn } from "./ConversationTurn";
+
+/** Rebuild the panel conversation from the daemon's stored turns. */
+export function turnsFromSession(rows: SessionTurnRow[]): Turn[] {
+  const out: Turn[] = [];
+  for (const r of rows) {
+    if (r.kind === "note") {
+      out.push({
+        kind: "note",
+        id: r.turn_id,
+        noteId: r.turn_id,
+        content: r.user_content ?? "",
+        severity: r.severity,
+      });
+      continue;
+    }
+    let sel: string | undefined;
+    if (r.selection && typeof r.selection === "object") {
+      try {
+        sel = selectionLabel(r.selection as Selection);
+      } catch {
+        sel = undefined;
+      }
+    }
+    out.push({
+      kind: "qa",
+      id: r.turn_id,
+      question: r.question ?? "",
+      sel,
+      answer: r.answer ?? "",
+      collapsed: true,
+      error:
+        r.status === "cancelled"
+          ? "turn cancelled — no answer"
+          : r.status === "error"
+            ? "turn failed"
+            : undefined,
+    });
+  }
+  return out;
+}
 import { Shell } from "./Shell";
 
 interface AppState {
@@ -29,7 +72,11 @@ export interface ContentAppProps {
 export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
   const [client, setClient] = useState<DaemonClient | null>(null);
   const [state, setState] = useState<AppState>({ status: "loading", warnings: [] });
-  const [open, setOpen] = useState(true);
+  // null = undecided: the panel opens itself only when the PR has history
+  // (or something needs attention); a fresh PR stays closed behind the CR
+  // button. An explicit user toggle always wins.
+  const [open, setOpen] = useState<boolean | null>(null);
+  const [history, setHistory] = useState<Turn[] | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [prSlug, setPrSlug] = useState(prUrl);
 
@@ -56,9 +103,18 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
       if (scrape.data.owner && scrape.data.repo && scrape.data.number) {
         setPrSlug(`${scrape.data.owner}/${scrape.data.repo}#${scrape.data.number}`);
       }
+      const loadHistory = async (sessionId: string) => {
+        try {
+          const detail = await c.getSession(sessionId);
+          if (!cancelled) setHistory(turnsFromSession(detail.turns ?? []));
+        } catch {
+          if (!cancelled) setHistory([]);
+        }
+      };
       try {
         const sess = await c.createOrUpdateSession(prUrl, scrape.data);
         if (cancelled) return;
+        void loadHistory(sess.session_id);
         if (sess.worktree_ready) {
           setState({
             status: "ready",
@@ -97,6 +153,19 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
       cancelled = true;
     };
   }, [prUrl]);
+
+  // Auto-open once things settle: history → open on it; a problem → open so
+  // it is visible; a clean, empty session → stay closed behind the button.
+  useEffect(() => {
+    if (open !== null) return;
+    if (state.status === "error" || state.status === "not_paired") {
+      setOpen(true);
+      return;
+    }
+    if (state.status === "ready" && history !== null) {
+      setOpen(history.length > 0);
+    }
+  }, [open, state.status, history]);
 
   if (!open) {
     return (
@@ -145,6 +214,7 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
           <QaPanel
             client={client}
             sessionId={state.sessionId}
+            initialTurns={history ?? undefined}
             prSlug={prSlug}
             selection={selection}
             onClearSelection={() => setSelection(null)}

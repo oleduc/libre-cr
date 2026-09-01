@@ -19,6 +19,7 @@
     "test:browser:headed": "wxt build && playwright test --config=playwright.config.ts --headed"
   },
   "dependencies": {
+    "marked": "^18.0.11",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
