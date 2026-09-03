@@ -18,8 +18,14 @@ pub fn internal_tool_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "get_pr_diff".into(),
-            description: "Return the diff scraped from this PR.".into(),
-            input_schema: serde_json::json!({"type":"object","properties":{}}),
+            description: "The PR's changes (base branch → PR head) as structured per-file hunks, computed on the prepared checkout. Optional `paths` narrows it to specific files — do that for large PRs.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paths": {"type": "array", "items": {"type": "string"},
+                              "description": "Restrict to these file paths (as in the diff)."}
+                }
+            }),
         },
         ToolSchema {
             name: "get_pr_comments".into(),
@@ -71,11 +77,37 @@ pub struct InternalContext {
 impl InternalContext {
     pub async fn call(&self, name: &str, input: serde_json::Value) -> Result<serde_json::Value> {
         match name {
-            "get_pr_diff" => Ok(self
-                .pr_data
-                .get("diff")
-                .cloned()
-                .unwrap_or(serde_json::json!({"files": []}))),
+            "get_pr_diff" => {
+                let mut diff = self
+                    .pr_data
+                    .get("diff")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({"files": []}));
+                // The worktree-backed path filters by `paths`; the stored-diff
+                // fallback must honor it too, or a narrowed request returns
+                // every file.
+                let want: Vec<String> = input
+                    .get("paths")
+                    .and_then(|p| p.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !want.is_empty() {
+                    if let Some(files) = diff.get_mut("files").and_then(|f| f.as_array_mut()) {
+                        files.retain(|f| {
+                            f.get("path")
+                                .or_else(|| f.get("file"))
+                                .and_then(|v| v.as_str())
+                                .map(|p| want.iter().any(|w| w == p))
+                                .unwrap_or(false)
+                        });
+                    }
+                }
+                Ok(diff)
+            }
             "get_pr_comments" => Ok(self
                 .pr_data
                 .get("comments")

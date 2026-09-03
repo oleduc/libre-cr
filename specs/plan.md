@@ -293,7 +293,9 @@ Phases 1 and 2 are the parallelizable trunk. Phases 3–7 are mostly sequential.
 | Verbs (Phase B) | `find_callers`, `show_history`, `related_tests`, `compare_to_base`, `explain` |
 | Conversation storage | SQLite in review daemon |
 | Export format | Markdown clipboard + structured-for-future-OAuth |
-| API key location | Review daemon config (extension never sees it) |
+| API key location | Review daemon config (extension never sees it); falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env vars when unset |
+| Provider kinds | `mock`, `anthropic`, `openai_compat` |
+| Config UI | Daemon-served static page at `/config-ui` (token via `?token=`); supports live model listing and ambient-credential detection |
 | External MCP surface from review daemon | `ask_about_pr`, `list_sessions`, `get_session_history`, `export_session` |
 | Presentation tools | Five tools available to the LLM during browser-extension turns; routed back through the WS to the extension. Not exposed via the external MCP surface. |
 | IDE integration | Deferred; external MCP clients (Claude Desktop / Code) fill the gap |
@@ -305,7 +307,7 @@ Phases 1 and 2 are the parallelizable trunk. Phases 3–7 are mostly sequential.
 - Selector breakage handling — we may want a more structured "report this PR's HTML for our selector update" path beyond the soft warning.
 - Eviction defaults — 5 GB worktree threshold and 90-day session retention are guesses; tune from real usage.
 - Symbol picker in the extension — minimal tree-sitter port versus regex fallback. Start with regex, upgrade if needed.
-- Provider list — should we ship a third built-in (Ollama with native quirks)? OpenAI-compatible covers it for v2; can add later if user requests warrant.
+- Provider list — Ollama is covered by `openai_compat`. A dedicated native-Ollama provider is still unscheduled. An experimental `claude_code` OAuth-login provider was prototyped during manual testing and removed: Anthropic's terms don't permit third-party clients to use Claude Code / subscription OAuth tokens.
 - Worktree creation for private PRs — the daemon needs the user's git credentials. We rely on the user's existing git config (SSH keys, credential helpers). Document this in `08-distribution.md` if it gets surprising.
 
 ## Out Of Scope

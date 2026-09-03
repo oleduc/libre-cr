@@ -27,7 +27,9 @@ pub async fn run() -> Result<()> {
     let resp = reqwest::Client::new()
         .post(&url)
         .bearer_auth(&token)
-        .json(&serde_json::json!({}))
+        // Ask for the daemon's maximum (15 min): loading an extension and
+        // filling the form routinely took longer than the 5-minute default.
+        .json(&serde_json::json!({ "ttl_seconds": 900 }))
         .send()
         .await
         .map_err(|e| anyhow::anyhow!("contact daemon at {url}: {e}"))?;

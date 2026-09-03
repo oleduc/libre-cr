@@ -15,16 +15,30 @@ function jsonResponse(body: unknown, init: Partial<ResponseInit> = {}): Response
 describe("ExportModal", () => {
   afterEach(() => cleanup());
 
+  it("buildExportBody only sends the tool log with context", () => {
+    expect(buildExportBody("full_transcript", "markdown", "any", true).filter).toMatchObject({
+      include_tool_io: true,
+    });
+    expect(buildExportBody("notes_only", "markdown", "any", true).filter).toMatchObject({
+      include_tool_io: false,
+    });
+    // Only the markdown export renders the log; a GitHub review must not
+    // accept the flag and silently drop it.
+    expect(buildExportBody("full_transcript", "github_review", "any", true).filter).toMatchObject({
+      include_tool_io: false,
+    });
+  });
+
   it("buildExportBody encodes content and severity_min correctly", () => {
     expect(buildExportBody("notes_only", "markdown", "any")).toEqual({
       format: "markdown",
-      filter: { include_thinking: false, severity_min: null },
+      filter: { include_thinking: false, severity_min: null, include_tool_io: false },
     });
     expect(
       buildExportBody("notes_plus_context", "github_review", "warning"),
     ).toEqual({
       format: "github_review",
-      filter: { include_thinking: true, severity_min: "warning" },
+      filter: { include_thinking: true, severity_min: "warning", include_tool_io: false },
     });
   });
 

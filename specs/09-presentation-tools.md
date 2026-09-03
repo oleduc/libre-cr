@@ -212,7 +212,7 @@ These are *hints*, not enforcement. The LLM still decides. If a verb produces a 
 
 ```
 ─────────────────────────────────────────
- 2 highlights · 1 annotation · [Clear all]
+ 2 highlights · 1 annotation · [Clear all effects]
 ─────────────────────────────────────────
 ```
 

@@ -31,6 +31,10 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Container-level default: a partial section in review.toml (e.g. a [provider]
+// block with only `kind`) fills missing fields from Default instead of failing
+// to parse. Found by manual testing with a minimal hand-written config.
+#[serde(default)]
 pub struct ServerConfig {
     pub bind: String,
     pub port: u16,
@@ -54,6 +58,10 @@ impl Default for ServerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Container-level default: a partial section in review.toml (e.g. a [provider]
+// block with only `kind`) fills missing fields from Default instead of failing
+// to parse. Found by manual testing with a minimal hand-written config.
+#[serde(default)]
 pub struct StorageConfig {
     pub data_dir: String,
     pub db: String,
@@ -69,6 +77,10 @@ impl Default for StorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Container-level default: a partial section in review.toml (e.g. a [provider]
+// block with only `kind`) fills missing fields from Default instead of failing
+// to parse. Found by manual testing with a minimal hand-written config.
+#[serde(default)]
 pub struct ProviderConfig {
     pub kind: String,
     #[serde(default)]
@@ -94,6 +106,10 @@ impl Default for ProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Container-level default: a partial section in review.toml (e.g. a [provider]
+// block with only `kind`) fills missing fields from Default instead of failing
+// to parse. Found by manual testing with a minimal hand-written config.
+#[serde(default)]
 pub struct CodeDaemonConfig {
     pub mode: String,
     pub binary: String,
@@ -116,6 +132,10 @@ impl Default for CodeDaemonConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Container-level default: a partial section in review.toml (e.g. a [provider]
+// block with only `kind`) fills missing fields from Default instead of failing
+// to parse. Found by manual testing with a minimal hand-written config.
+#[serde(default)]
 pub struct McpServerConfig {
     pub enabled: bool,
     pub stdio: bool,
@@ -138,6 +158,10 @@ pub struct GlobalInstructions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Container-level default: a partial section in review.toml (e.g. a [provider]
+// block with only `kind`) fills missing fields from Default instead of failing
+// to parse. Found by manual testing with a minimal hand-written config.
+#[serde(default)]
 pub struct Limits {
     pub max_tool_turns: u32,
     pub max_history_messages: u32,
@@ -195,10 +219,61 @@ impl Config {
         Ok(())
     }
 
-    /// Default config path under `$HOME/.config/libre-cr/review.toml`.
+    /// Default config path: `$XDG_CONFIG_HOME/libre-cr/review.toml`, falling
+    /// back to `~/.config/libre-cr/review.toml`.
+    ///
+    /// Deliberately NOT `dirs::config_dir()`: on macOS that resolves to
+    /// `~/Library/Application Support`, which silently diverges from where the
+    /// wrapper CLI, the docs, and this daemon's own token/endpoint files live
+    /// (`~/.config/libre-cr/`). Found by manual testing — the daemon was
+    /// ignoring the `review.toml` the user (and `libre-cr` wrapper) wrote.
     pub fn default_path() -> PathBuf {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join("libre-cr").join("review.toml")
+    }
+
+    /// Pre-fix location on macOS (`~/Library/Application Support/libre-cr/`).
+    /// Kept only so `load_default()` can migrate an existing file once.
+    pub fn macos_legacy_path() -> PathBuf {
         let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
         base.join("libre-cr").join("review.toml")
+    }
+
+    /// One-time migration: if the new default path has no file but the old
+    /// `dirs::config_dir()` location (macOS: Application Support) has one,
+    /// copy it over. No-op on platforms where the two coincide (Linux).
+    /// Returns the path to load: the new default, or the legacy file in place
+    /// when the copy failed — never silently defaults over a readable config.
+    pub fn migrate_macos_legacy() -> PathBuf {
+        let new_path = Self::default_path();
+        let legacy = Self::macos_legacy_path();
+        if legacy == new_path || new_path.exists() || !legacy.exists() {
+            return new_path;
+        }
+        if let Some(parent) = new_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::copy(&legacy, &new_path) {
+            Ok(_) => {
+                tracing::info!(
+                    from = %legacy.display(),
+                    to = %new_path.display(),
+                    "migrated review.toml to ~/.config/libre-cr/"
+                );
+                new_path
+            }
+            Err(e) => {
+                tracing::warn!(
+                    from = %legacy.display(),
+                    "could not migrate legacy review.toml: {e}; loading it in place"
+                );
+                legacy
+            }
+        }
     }
 }
 
@@ -228,6 +303,50 @@ mod tests {
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(back.server.bind, c.server.bind);
         assert_eq!(back.limits.max_tool_turns, c.limits.max_tool_turns);
+    }
+
+    #[test]
+    fn partial_provider_section_parses_with_defaults() {
+        // Manual-testing regression: a hand-written minimal config (exactly
+        // what docs/manual-testing.md shows) must not fail on missing fields.
+        let toml_src = r#"
+[provider]
+kind = "mock"
+model = "mock"
+
+[mock]
+code_intel = true
+
+[[mock.provider_script]]
+event = { type = "text_delta", text = "hi" }
+"#;
+        let cfg: Config = toml::from_str(toml_src).expect("partial config must parse");
+        assert_eq!(cfg.provider.kind, "mock");
+        assert_eq!(cfg.provider.model, "mock");
+        assert_eq!(cfg.provider.max_tokens, 4096); // filled from Default
+        assert!(cfg.mock.code_intel);
+        assert_eq!(cfg.mock.provider_script.len(), 1);
+    }
+
+    #[test]
+    fn default_path_is_xdg_dot_config_not_application_support() {
+        // macOS regression found in manual testing: dirs::config_dir()
+        // resolves to `~/Library/Application Support`, so the daemon ignored
+        // the review.toml at `~/.config/libre-cr/` that the wrapper, docs,
+        // and its own token/endpoint files use.
+        let p = Config::default_path();
+        let s = p.to_string_lossy();
+        assert!(s.ends_with("review.toml"), "unexpected: {s}");
+        if std::env::var_os("XDG_CONFIG_HOME").is_none() {
+            assert!(
+                s.contains(".config"),
+                "default_path must live under ~/.config, got: {s}"
+            );
+            assert!(
+                !s.contains("Application Support"),
+                "default_path must not use Application Support: {s}"
+            );
+        }
     }
 
     #[test]

@@ -30,6 +30,33 @@ opens `<endpoint>/config-ui?token=…` in your browser — a small form for the 
 
 The extension popup's *Configure daemon* link opens the same page.
 
+### Fetch models
+
+Next to the **Model** field is a **Fetch models** button. Click it to ask the live provider API for the models available to your account and fill the dropdown — no more guessing or copy-pasting model ids. It uses the form's current `kind`, `endpoint`, and (if you typed one) `api_key`, so you can list models for a candidate provider *before* saving. Fetching never persists anything.
+
+- **Anthropic** → `GET /v1/models` (returns model ids and human display names).
+- **OpenAI-compatible** (including OpenAI, OpenRouter, Ollama) → `GET /v1/models` derived from your endpoint (ids only).
+
+If the fetch fails (bad key, offline, a provider that doesn't expose `/models`), the page shows the error and you can still type the model id by hand — pick **Other / type manually** in the dropdown and use the text field. The free-text field is always the source of truth, so a model that isn't in the list still works.
+
+### Detected credentials and the env-var fallback
+
+You don't have to paste an API key at all if the daemon already has one in its environment. Before starting the daemon, export the standard variable for your provider:
+
+- `anthropic` → `ANTHROPIC_API_KEY`
+- `openai_compat` → `OPENAI_API_KEY`
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-…
+libre-cr start
+```
+
+When you build a provider whose stored key is blank, the daemon falls back to this environment variable automatically. A **stored key always wins** — clearing the env-var fallback is as simple as saving a key through the config UI.
+
+The config UI detects these variables: if the selected provider has one set in the daemon's environment, an inline hint appears next to the API-key field — *"✓ ANTHROPIC_API_KEY detected in the daemon's environment — leave the key blank to use it."* Leave the field blank to use the ambient key.
+
+> Only these two environment variables are inspected. The daemon intentionally does **not** read Claude Code / Claude CLI OAuth credentials, system keychains, or anything under `~/.claude/`.
+
 ## `review.toml` reference
 
 ### `[provider]`
@@ -40,8 +67,8 @@ The extension popup's *Configure daemon* link opens the same page.
 | `model` | `"mock-model"` | Model name sent to the provider (e.g. `claude-sonnet-4-20250514`, `gpt-4o`, `llama3.1`) |
 | `max_tokens` | `4096` | Per-response output token cap |
 | `temperature` | `0.0` | Sampling temperature |
-| `endpoint` | `""` | Override the provider's base URL (blank = provider default). Required for Ollama and other self-hosted endpoints |
-| `api_key_enc` | `""` | Your API key, **encrypted at rest** with the install key. Do not hand-edit — set the key through the config UI (or `POST /v1/config` with a plaintext `provider.api_key`, which the daemon encrypts before writing) |
+| `endpoint` | `""` | Override the provider URL (blank = provider default). Either the base URL ending in `/v1` (e.g. `https://openrouter.ai/api/v1`, `http://127.0.0.1:11434/v1`) or the full request URL (`…/v1/chat/completions`, `…/v1/messages`). Required for OpenRouter, Ollama and other non-default endpoints |
+| `api_key_enc` | `""` | Your API key, **encrypted at rest** with the install key. Do not hand-edit — set the key through the config UI (or `POST /v1/config` with a plaintext `provider.api_key`, which the daemon encrypts before writing). When left blank, the daemon falls back to the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variable for the provider kind (see [Detected credentials](#detected-credentials-and-the-env-var-fallback)) |
 
 #### Anthropic
 

@@ -100,8 +100,8 @@ libre-cr stop                     Stop both daemons gracefully
 libre-cr restart
 libre-cr status                   Show health, version, ports, PIDs
 libre-cr logs [-f]                Tail both daemons' logs
-libre-cr pair                     Run the extension pairing flow
-libre-cr config                   Open the review daemon's config UI
+libre-cr pair                     Issue a pairing code through the running daemon (POST /v1/pair/issue)
+libre-cr config                   Open the review daemon's config UI (<endpoint>/config-ui?token=…)
 libre-cr doctor                   Diagnose: ports, file perms, code-daemon health
 libre-cr update                   Check for updates; apply if user confirms
 libre-cr version
@@ -116,6 +116,8 @@ The wrapper supervises both daemons. Failure handling:
 - `libre-cr-code` exits unexpectedly → `libre-cr-review` notices (its MCP child died) and restarts it via the same supervision logic from its own side. The wrapper just keeps `libre-cr-review` alive.
 
 Two layers of supervision because the user-facing process (`libre-cr-review`) cares about `libre-cr-code` for every operation; the wrapper cares about the user-facing process. Both are well-tested patterns.
+
+`libre-cr start` runs the supervisor **in the foreground** — it does not daemonize itself. After printing the first-run summary it holds the terminal, supervising the review daemon and honoring `SIGTERM`/`SIGINT` for graceful shutdown. Turning it into a background service is the platform service manager's job: `brew services` (macOS), `systemd --user` (Linux), or Task Scheduler (Windows). Double-forking ourselves is fragile across platforms and intentionally avoided.
 
 Logs go to `~/.local/state/libre-cr/log/`:
 - `libre-cr-review.log` (rolling, daily, 14 days retained)
@@ -233,6 +235,8 @@ Release on a tag push. Homebrew / Scoop formulas auto-bumped from the release ma
 | LLM API key (Anthropic / OpenAI / compatible) | Required at runtime | Daemon makes the calls |
 
 We do not bundle any of these. `libre-cr doctor` checks for git and warns clearly if it's missing.
+
+The LLM key can be supplied two ways, in priority order: (1) saved through the config UI (`/config-ui`, stored encrypted in `review.toml`); or (2) the ambient `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variable, used automatically when no key is saved. The config UI reports which env vars it can detect.
 
 ## Multi-Machine Considerations
 

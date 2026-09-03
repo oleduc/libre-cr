@@ -13,6 +13,7 @@ Libre CR is a code review companion that augments GitHub pull request pages with
 | [Using Libre CR](using.md) | The review workflow: selections, verbs, notes, export, popup |
 | [Troubleshooting](troubleshooting.md) | Symptom → cause → fix tables, logs, reset and uninstall |
 | [FAQ](faq.md) | Privacy, data locations, multi-machine, MCP reuse |
+| [Manual testing](../manual-testing.md) | Verify the whole stack by hand — incl. a keyless mock-provider smoke |
 
 ## Five-minute quick start
 

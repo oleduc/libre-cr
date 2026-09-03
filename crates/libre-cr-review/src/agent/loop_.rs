@@ -22,6 +22,9 @@ pub struct TurnInput {
     pub question: String,
     pub selection: Option<Selection>,
     pub verb: Option<String>,
+    /// Turn ids the client asked to replay at full fidelity (expanded in the
+    /// panel). Ids not belonging to the session are ignored.
+    pub context_turn_ids: Vec<String>,
 }
 
 /// Context the loop needs from the caller. Built fresh per turn.
@@ -46,20 +49,61 @@ pub struct TurnResult {
     pub wall_ms: u64,
 }
 
-fn build_system_prompt(global: &str, verb: Option<&str>, has_presentation: bool) -> Message {
+fn build_system_prompt(
+    global: &str,
+    verb: Option<&str>,
+    has_presentation: bool,
+    worktree: Option<&str>,
+    base_ref: Option<&str>,
+) -> Message {
     let mut s = String::new();
     s.push_str(
         "You are libre-cr's review assistant. The reviewer asks questions about \
          a specific pull request; you answer with grounded references to the \
-         code. Prefer concise, structured answers.",
+         code. Prefer concise, structured answers. Earlier answers in this \
+         conversation may rest on tool results that were wrong or incomplete at \
+         the time; when a fresh tool result disagrees with something said \
+         before, the tool result wins — re-derive from it rather than repeating \
+         the earlier claim. Ground every statement about the code in what you \
+         actually read this turn: before describing, naming or proposing changes \
+         to functions, classes or files, read them (get_pr_diff, read_file, \
+         grep). Never invent identifiers — if you have not read it, say so \
+         instead of guessing. Tool outputs from earlier turns are replayed \
+         only for the most recent turns; anything older is gone from this \
+         conversation. Before citing an identifier, line number or code \
+         detail first seen in an earlier turn, re-read it — every identifier \
+         and file:line you state must appear verbatim in a tool result you \
+         can currently see.",
     );
+    if let Some(path) = worktree {
+        s.push_str(&format!(
+            "\n\nThe PR head is already checked out at `{path}`{}. All code tools \
+             (read_file, grep, git_diff, git_log, list_symbols, …) operate on that \
+             checkout automatically — you never need to clone, discover or prepare \
+             a repository. Use get_pr_diff for the PR's changes (pass `paths` to \
+             narrow it) and read_file/grep for surrounding context. Line numbers \
+             in the diff are the PR head's.",
+            base_ref
+                .map(|b| format!(" (base branch: `{b}`)"))
+                .unwrap_or_default()
+        ));
+    }
     if has_presentation {
         s.push_str(
             "\n\nYou have presentation tools that affect what the reviewer sees \
              in the browser: highlight_lines, annotate_line, scroll_to, \
-             open_link, clear_presentation. Use them sparingly to amplify your \
-             answer when they help the reviewer follow it. The answer text \
-             remains primary.",
+             open_link, clear_presentation. When the reviewer asks you to walk \
+             through, point out, show or highlight parts of the PR, highlight \
+             each part you describe (highlight_lines with `label` = the heading \
+             you use in the answer and `detail` = your explanation of that part, \
+             in the order you present them) — that is the expected deliverable, \
+             not an extra; the reviewer steps through these highlights in a tour \
+             widget that shows label and detail beside the code. Finish a \
+             walkthrough with scroll_to on the first highlighted part so the \
+             reviewer starts where you started. For plain questions, use them only when they help. The \
+             answer text remains primary. If a presentation call fails for one \
+             file (e.g. file_not_in_view), say so briefly and continue with the \
+             others — never abandon the rest of the walkthrough over it.",
         );
     }
     if let Some(v) = verb {
@@ -106,6 +150,19 @@ fn build_user_message(question: &str, selection: Option<&Selection>) -> Message 
             },
             s.file()
         ));
+        // The exact selected text, so "this line" can never mean another line.
+        let snippet = match s {
+            Selection::Line { text, .. }
+            | Selection::Range { text, .. }
+            | Selection::Symbol { text, .. } => text.as_deref(),
+        };
+        if let Some(snippet) = snippet.filter(|t| !t.trim().is_empty()) {
+            let mut clipped: String = snippet.chars().take(2000).collect();
+            if snippet.chars().count() > 2000 {
+                clipped.push('…');
+            }
+            text.push_str(&format!("The selected text is:\n```\n{clipped}\n```\n"));
+        }
     }
     text.push_str(question);
     Message {
@@ -159,34 +216,30 @@ pub async fn run_turn(
         .iter()
         .any(|t| crate::tools::presentation::PRESENTATION_TOOL_NAMES.contains(&t.name.as_str()));
 
+    let base_ref = ctx.router.base_ref();
     let system = build_system_prompt(
         &ctx.global_instructions,
         input.verb.as_deref(),
         has_presentation,
+        ctx.router.worktree_path(),
+        base_ref.as_deref(),
     );
     let user_msg = build_user_message(&input.question, input.selection.as_ref());
 
-    // Pull recent history. Phase 4 will integrate verb addenda; here we only
-    // load the prior text exchange so the model has continuity.
+    // Pull recent history: prose for every prior turn, plus the tool results
+    // of the most recent turns verbatim so a follow-up question still has its
+    // evidence in context. Older turns keep a stub naming the tools used, so
+    // the model re-reads instead of reciting from memory.
     let mut messages = vec![system];
-    let history = ctx.store.list_turns(&ctx.session_id).await?;
-    let take = (ctx.max_history_messages as usize).saturating_sub(1);
-    for turn in history.iter().rev().take(take).rev() {
-        if matches!(turn.kind, TurnKind::Question) && turn.status == TurnStatus::Ok {
-            if let Some(q) = &turn.question {
-                messages.push(Message {
-                    role: Role::User,
-                    content: vec![ContentBlock::Text { text: q.clone() }],
-                });
-            }
-            if let Some(a) = &turn.answer {
-                messages.push(Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text { text: a.clone() }],
-                });
-            }
-        }
-    }
+    messages.extend(
+        build_history_messages(
+            &ctx.store,
+            &ctx.session_id,
+            ctx.max_history_messages as usize,
+            &input.context_turn_ids,
+        )
+        .await?,
+    );
     messages.push(user_msg);
 
     let tools = ctx.router.tools_for_verb(input.verb.as_deref());
@@ -342,6 +395,140 @@ async fn persist(
     Ok(turn.turn_id)
 }
 
+/// How many of the most recent history turns are replayed with their full
+/// tool results: a follow-up question almost always targets the last answers,
+/// and without the evidence in context the model paraphrases from memory
+/// (the fabricated-identifier hallucination class).
+const REPLAY_FULL_TURNS: usize = 2;
+/// Per tool-result cap when replaying history (a `get_pr_diff` can be huge).
+const REPLAY_RESULT_MAX_CHARS: usize = 20_000;
+/// Total tool-result budget per replayed turn.
+const REPLAY_TURN_MAX_CHARS: usize = 40_000;
+/// Hard cap on how many turns replay at full fidelity per ask, however many
+/// the client expands; oldest are demoted to stubs first.
+const REPLAY_MAX_FULL_TURNS: usize = 5;
+
+fn clip(s: &str, max_chars: usize) -> (String, bool) {
+    if s.chars().count() <= max_chars {
+        (s.to_string(), false)
+    } else {
+        (s.chars().take(max_chars).collect(), true)
+    }
+}
+
+/// One-line description of a trace for the stub on older turns.
+fn tool_stub(t: &ToolTrace) -> String {
+    let arg = t
+        .input_json
+        .get("file")
+        .or_else(|| t.input_json.get("pattern"))
+        .or_else(|| t.input_json.get("dir"))
+        .and_then(|v| v.as_str());
+    match arg {
+        Some(a) => format!("{} {a}", t.tool_name),
+        None => t.tool_name.clone(),
+    }
+}
+
+/// History replay: every prior ok question turn contributes its Q/A prose;
+/// the last `REPLAY_FULL_TURNS` of them also carry their tool results
+/// verbatim (capped), and older turns carry a one-line stub naming the tools
+/// used, so the model knows those outputs are gone and re-reads instead of
+/// citing from memory.
+async fn build_history_messages(
+    store: &Store,
+    session_id: &str,
+    max_history_messages: usize,
+    context_turn_ids: &[String],
+) -> Result<Vec<Message>> {
+    let history = store.list_turns(session_id).await?;
+    // Each replayed turn contributes two messages (user + assistant); budget
+    // by messages so the configured limit is what actually reaches the
+    // provider (minus one slot for the current question).
+    let take = max_history_messages.saturating_sub(1) / 2;
+    let turns: Vec<&Turn> = history
+        .iter()
+        .filter(|t| matches!(t.kind, TurnKind::Question) && t.status == TurnStatus::Ok)
+        .collect();
+    let turns = &turns[turns.len().saturating_sub(take)..];
+    // Full fidelity: the recency floor plus any turn the client expanded,
+    // capped at REPLAY_MAX_FULL_TURNS (oldest demoted first). Matching against
+    // this session's own turns is also what scopes client-sent ids: a foreign
+    // turn_id matches nothing.
+    let full_from = turns.len().saturating_sub(REPLAY_FULL_TURNS);
+    let mut full: Vec<bool> = turns
+        .iter()
+        .enumerate()
+        .map(|(i, t)| i >= full_from || context_turn_ids.iter().any(|id| id == &t.turn_id))
+        .collect();
+    let mut remaining = REPLAY_MAX_FULL_TURNS;
+    for flag in full.iter_mut().rev() {
+        if *flag {
+            if remaining == 0 {
+                *flag = false;
+            } else {
+                remaining -= 1;
+            }
+        }
+    }
+    let mut messages = Vec::new();
+    for (i, turn) in turns.iter().enumerate() {
+        if let Some(q) = &turn.question {
+            messages.push(Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: q.clone() }],
+            });
+        }
+        if let Some(a) = &turn.answer {
+            let mut text = a.clone();
+            let traces = store.list_traces(&turn.turn_id).await?;
+            if !traces.is_empty() {
+                if full[i] {
+                    text.push_str(
+                        "\n\n[Tool results gathered during this turn — reference \
+                         material, not part of the shown answer:]",
+                    );
+                    let mut budget = REPLAY_TURN_MAX_CHARS;
+                    for tr in &traces {
+                        let (input, _) = clip(&tr.input_json.to_string(), 300);
+                        if budget == 0 {
+                            text.push_str(&format!(
+                                "\n- {} {input} → [omitted — re-read to cite]",
+                                tr.tool_name
+                            ));
+                            continue;
+                        }
+                        let cap = REPLAY_RESULT_MAX_CHARS.min(budget);
+                        let (out, clipped) = clip(&tr.output_json.to_string(), cap);
+                        budget = budget.saturating_sub(out.chars().count());
+                        text.push_str(&format!(
+                            "\n- {} {input} →\n{out}{}",
+                            tr.tool_name,
+                            if clipped {
+                                "\n…[truncated — re-read to cite the rest]"
+                            } else {
+                                ""
+                            }
+                        ));
+                    }
+                } else {
+                    let names: Vec<String> = traces.iter().map(tool_stub).collect();
+                    text.push_str(&format!(
+                        "\n\n[Tools used this turn: {} — outputs no longer in \
+                         context; re-read before citing specifics.]",
+                        names.join(", ")
+                    ));
+                }
+            }
+            messages.push(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text }],
+            });
+        }
+    }
+    Ok(messages)
+}
+
 /// Persist a turn as `cancelled` (used by the WS handler on disconnect).
 pub async fn persist_cancelled(
     ctx: &TurnContext,
@@ -364,6 +551,136 @@ pub async fn persist_cancelled(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn history_replays_recent_tool_results_and_stubs_older() {
+        let store = Store::open_in_memory().unwrap();
+        let sess = store
+            .upsert_session("https://github.com/a/b/pull/9", serde_json::json!({}))
+            .await
+            .unwrap();
+        for (n, marker) in [(1i64, "OLD_OUTPUT"), (2, "MID_OUTPUT"), (3, "NEW_OUTPUT")] {
+            let turn_id = format!("t{n}");
+            let t = Turn {
+                turn_id: turn_id.clone(),
+                session_id: sess.session_id.clone(),
+                ordinal: n,
+                kind: TurnKind::Question,
+                status: TurnStatus::Ok,
+                verb: None,
+                question: Some(format!("q{n}")),
+                selection: None,
+                answer: Some(format!("a{n}")),
+                user_content: None,
+                severity: None,
+                usage_in: 0,
+                usage_out: 0,
+                created_at: n,
+                source_turn_id: None,
+            };
+            let tr = ToolTrace {
+                trace_id: format!("tr{n}"),
+                turn_id,
+                ordinal: 1,
+                tool_name: "read_file".into(),
+                input_json: serde_json::json!({"file": "src/x.py"}),
+                output_json: serde_json::json!({"content": marker}),
+                duration_ms: 1,
+                ok: true,
+            };
+            store.insert_turn(&t, &[tr]).await.unwrap();
+        }
+        let msgs = build_history_messages(&store, &sess.session_id, 30, &[])
+            .await
+            .unwrap();
+        let all: String = msgs
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .map(|b| match b {
+                ContentBlock::Text { text } => text.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        // The two most recent turns carry their tool outputs verbatim.
+        assert!(all.contains("NEW_OUTPUT"));
+        assert!(all.contains("MID_OUTPUT"));
+        // The oldest turn is stubbed: tool + file named, output dropped.
+        assert!(!all.contains("OLD_OUTPUT"));
+        assert!(all.contains("read_file src/x.py"));
+        assert!(all.contains("re-read before citing"));
+    }
+
+    #[tokio::test]
+    async fn context_turn_ids_promote_old_turns_and_ignore_foreign_ids() {
+        let store = Store::open_in_memory().unwrap();
+        let sess = store
+            .upsert_session("https://github.com/a/b/pull/9", serde_json::json!({}))
+            .await
+            .unwrap();
+        for (n, marker) in [(1i64, "OLD_OUTPUT"), (2, "MID_OUTPUT"), (3, "NEW_OUTPUT")] {
+            let turn_id = format!("t{n}");
+            let t = Turn {
+                turn_id: turn_id.clone(),
+                session_id: sess.session_id.clone(),
+                ordinal: n,
+                kind: TurnKind::Question,
+                status: TurnStatus::Ok,
+                verb: None,
+                question: Some(format!("q{n}")),
+                selection: None,
+                answer: Some(format!("a{n}")),
+                user_content: None,
+                severity: None,
+                usage_in: 0,
+                usage_out: 0,
+                created_at: n,
+                source_turn_id: None,
+            };
+            let tr = ToolTrace {
+                trace_id: format!("tr{n}"),
+                turn_id,
+                ordinal: 1,
+                tool_name: "read_file".into(),
+                input_json: serde_json::json!({"file": "src/x.py"}),
+                output_json: serde_json::json!({"content": marker}),
+                duration_ms: 1,
+                ok: true,
+            };
+            store.insert_turn(&t, &[tr]).await.unwrap();
+        }
+        // Expanding turn t1 promotes it to full fidelity; a foreign id is a no-op.
+        let ids = vec!["t1".to_string(), "t_other_session".to_string()];
+        let msgs = build_history_messages(&store, &sess.session_id, 30, &ids)
+            .await
+            .unwrap();
+        let all: String = msgs
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .map(|b| match b {
+                ContentBlock::Text { text } => text.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert!(all.contains("OLD_OUTPUT"));
+        assert!(all.contains("MID_OUTPUT"));
+        assert!(all.contains("NEW_OUTPUT"));
+    }
+
+    #[test]
+    fn user_message_quotes_the_selected_text() {
+        let sel = libre_cr_common::Selection::Line {
+            file: "src/a.rs".into(),
+            line: 38,
+            text: Some("_CONDITIONAL_CHECK_FAILED = \"ConditionalCheckFailedException\"".into()),
+        };
+        let msg = build_user_message("What is this for?", Some(&sel));
+        let ContentBlock::Text { text } = &msg.content[0] else {
+            panic!("expected text");
+        };
+        assert!(text.contains("[Selection: line 38 in src/a.rs]"));
+        assert!(text.contains("ConditionalCheckFailedException"));
+        assert!(text.contains("What is this for?"));
+    }
+
     use super::*;
     use crate::agent::RecordingSink;
     use crate::config::ScriptedEvent;
@@ -426,6 +743,7 @@ mod tests {
                 question: "hi?".into(),
                 selection: None,
                 verb: None,
+                context_turn_ids: vec![],
             },
             &sink,
         )
@@ -481,6 +799,7 @@ mod tests {
                 question: "where?".into(),
                 selection: None,
                 verb: None,
+                context_turn_ids: vec![],
             },
             &sink,
         )
@@ -600,6 +919,7 @@ mod tests {
                 question: "go".into(),
                 selection: None,
                 verb: None,
+                context_turn_ids: vec![],
             },
             &sink,
         )
@@ -645,6 +965,7 @@ mod tests {
                 question: "loop".into(),
                 selection: None,
                 verb: None,
+                context_turn_ids: vec![],
             },
             &sink,
         )

@@ -11,15 +11,16 @@ use axum::{
     Json, Router,
 };
 use libre_cr_common::http_api::{
-    CodeDaemonHealth, CodeDaemonHealthResponse, CreateSessionResponse, ExportResponse,
-    HealthResponse, ListSessionsResponse, PairIssueResponse, PairRedeemResponse, SearchHit,
-    SearchResponse, SessionDetailResponse, SessionSummary, VerbDescriptor,
+    CodeDaemonHealth, CodeDaemonHealthResponse, CreateSessionResponse, DetectedCredentials,
+    ExportResponse, HealthResponse, ListSessionsResponse, ModelsResponse, PairIssueResponse,
+    PairRedeemResponse, SearchHit, SearchResponse, SessionDetailResponse, SessionSummary,
+    VerbDescriptor,
 };
 use libre_cr_common::{Selection, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::error::{Error, Result};
 use crate::storage::Severity;
@@ -55,16 +56,13 @@ pub struct ListenInfo {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    // Dynamic CORS (N3): the predicate reads the live allowlist on every
-    // request, so an origin learned via `/v1/pair` works without a daemon
-    // restart. Empty allowlist → allow nothing on CORS preflight; same-
-    // origin / non-browser callers (curl, tests) aren't affected.
-    let allowed_origin = state.allowed_origin.clone();
+    // CORS is wide open on purpose. The bearer token is the security boundary;
+    // an origin allowlist buys nothing here and broke the content script, whose
+    // fetches carry the *page* origin (https://github.com) under MV3, not the
+    // extension's. The unauthenticated routes (/v1/health, rate-limited
+    // /v1/pair) are reachable by anything on the machine via curl anyway.
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(move |origin, _| {
-            let allowed = allowed_origin.read().map(|g| g.clone()).unwrap_or_default();
-            !allowed.is_empty() && origin.as_bytes() == allowed.as_bytes()
-        }))
+        .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
@@ -81,6 +79,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/search", get(search_global))
         .route("/v1/config", get(get_config).post(post_config))
         .route("/v1/config/validate", post(validate_config))
+        .route("/v1/provider/models", post(provider_models))
+        .route("/v1/provider/detected", get(provider_detected))
         .route("/v1/health", get(health))
         .route("/v1/health/code-daemon", get(health_code_daemon))
         .route("/v1/pair", post(pair))
@@ -420,7 +420,12 @@ fn apply_provider_patch(
         cfg.provider.endpoint = s.to_string();
     }
     if let Some(s) = p.get("api_key").and_then(|s| s.as_str()) {
-        cfg.provider.api_key_enc = crate::storage::encrypt_value(install_key, s)?;
+        // An explicit empty string clears the saved key (→ env-var fallback).
+        cfg.provider.api_key_enc = if s.is_empty() {
+            String::new()
+        } else {
+            crate::storage::encrypt_value(install_key, s)?
+        };
     }
     Ok(())
 }
@@ -492,6 +497,49 @@ async fn validate_config(
     Ok(Json(json!({"ok": true})))
 }
 
+/// List the models offered by a *candidate* provider. The body is a provider
+/// patch (`{ provider: { kind, api_key?, endpoint? } }`, same shape as
+/// `POST /v1/config`). We apply it to a clone of the current config and build
+/// an ephemeral provider so the user can fetch a model list for a new
+/// provider+key *before* saving. Nothing is persisted.
+async fn provider_models(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<ModelsResponse>> {
+    let mut cfg = state.config.snapshot().await;
+    let saved_endpoint = cfg.provider.endpoint.clone();
+    apply_provider_patch(&mut cfg, &body, &state.install_key)?;
+    // The stored key is only ever sent to the endpoint it was saved with. A
+    // candidate pointing anywhere else must bring its own key (env-var keys,
+    // which the user controls, still apply) — otherwise a paired caller
+    // could steer the saved key to an arbitrary host and read it there.
+    let explicit_key = body
+        .get("provider")
+        .and_then(|p| p.get("api_key"))
+        .and_then(|k| k.as_str())
+        .is_some();
+    if cfg.provider.endpoint != saved_endpoint && !explicit_key {
+        cfg.provider.api_key_enc = String::new();
+    }
+    let provider = crate::provider::build_provider(&cfg, &state.install_key)?;
+    let models = provider.list_models().await?;
+    Ok(Json(ModelsResponse { models }))
+}
+
+/// Report which credentials are detectable in the daemon's environment, so the
+/// config UI can offer a one-click "no key needed" option.
+///
+/// Reflects ambient env vars only (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).
+async fn provider_detected() -> Json<DetectedCredentials> {
+    fn present(var: &str) -> bool {
+        std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false)
+    }
+    Json(DetectedCredentials {
+        anthropic: present("ANTHROPIC_API_KEY"),
+        openai: present("OPENAI_API_KEY"),
+    })
+}
+
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     // I1: report the real code-daemon state when the CLI wired in the
     // health hook; the mock fallback only exists for in-process tests.
@@ -560,16 +608,12 @@ async fn pair(
         }
     }
     if let Some(origin) = body.extension_origin.clone() {
-        // N3: the learned origin must survive a daemon restart and take
-        // effect on the in-process CORS layer immediately.
+        // Persisted for bookkeeping / diagnostics only; CORS no longer keys on it.
         let snapshot = {
             let mut cfg = state.config.0.lock().await;
-            cfg.server.extension_origin = origin.clone();
+            cfg.server.extension_origin = origin;
             cfg.clone()
         };
-        if let Ok(mut g) = state.allowed_origin.write() {
-            *g = origin;
-        }
         if let Some(path) = state.config_path.as_ref() {
             // Best-effort: the pairing itself succeeded; a failed write only
             // costs persistence across restarts.
@@ -653,6 +697,13 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
   #status { margin-top: 0.75rem; font-size: 0.9rem; }
   .ok { color: #064; } .err { color: #803; }
   small { color: #777; }
+  .modelRow { display: flex; gap: 0.5rem; align-items: center; }
+  .modelRow select { flex: 1; }
+  .modelRow button { margin-top: 0; white-space: nowrap; }
+  .hint { font-size: 0.85rem; color: #064; margin: 0.25rem 0 0; }
+  .modelStatus { font-size: 0.85rem; color: #555; margin: 0.25rem 0 0; }
+  .modelStatus.err { color: #803; }
+label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -667,8 +718,15 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
     <option value="openai_compat">openai_compat</option>
   </select>
 
-  <label for="model">Model</label>
-  <input id="model" name="model" type="text" autocomplete="off" />
+  <label for="modelSelect">Model</label>
+  <div class="modelRow">
+    <select id="modelSelect" name="modelSelect">
+      <option value="__manual__">Other / type manually</option>
+    </select>
+    <button type="button" id="fetchModels">Fetch models</button>
+  </div>
+  <input id="model" name="model" type="text" autocomplete="off" placeholder="model id" />
+  <p id="modelStatus" class="modelStatus" aria-live="polite"></p>
 
   <div class="row">
     <div>
@@ -684,8 +742,12 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
   <label for="endpoint">Endpoint <small>(blank = provider default)</small></label>
   <input id="endpoint" name="endpoint" type="text" autocomplete="off" />
 
-  <label for="api_key">API key <small>(stored encrypted)</small></label>
-  <input id="api_key" name="api_key" type="password" autocomplete="off" placeholder="leave blank to keep current" />
+  <div id="apiKeyField">
+    <label for="api_key">API key <small>(stored encrypted)</small></label>
+    <input id="api_key" name="api_key" type="password" autocomplete="off" placeholder="leave blank to keep current" />
+    <label class="inline"><input id="clear_key" type="checkbox" /> Clear the saved key (use the environment variable, or none)</label>
+  </div>
+  <p id="detectedHint" class="hint" hidden></p>
 
   <button type="submit">Save</button>
   <div id="status" role="status" aria-live="polite"></div>
@@ -698,35 +760,131 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
   var headers = { "content-type": "application/json" };
   if (token) headers["authorization"] = "Bearer " + token;
   var status = document.getElementById("status");
+  var kindEl = document.getElementById("kind");
+  var modelEl = document.getElementById("model");
+  var modelSelect = document.getElementById("modelSelect");
+  var modelStatus = document.getElementById("modelStatus");
+  var detectedHint = document.getElementById("detectedHint");
+  var apiKeyField = document.getElementById("apiKeyField");
+  var apiKeyEl = document.getElementById("api_key");
+  var clearKeyEl = document.getElementById("clear_key");
+  // Blank field = keep the stored key; the checkbox sends api_key: "" to clear it.
+  function apiKeyPatch(target) {
+    if (apiKeyEl.value) target.api_key = apiKeyEl.value;
+    else if (clearKeyEl.checked) target.api_key = "";
+  }
+  var endpointEl = document.getElementById("endpoint");
+  // Detected ambient credentials, keyed by provider kind.
+  var detected = { anthropic: false, openai_compat: false };
   function setStatus(msg, ok) {
     status.textContent = msg;
     status.className = ok ? "ok" : "err";
   }
+  function setModelStatus(msg, isErr) {
+    modelStatus.textContent = msg || "";
+    modelStatus.className = isErr ? "modelStatus err" : "modelStatus";
+  }
+  var ENV_VARS = { anthropic: "ANTHROPIC_API_KEY", openai_compat: "OPENAI_API_KEY" };
+  // Show the "detected key" hint next to the API-key field when the selected
+  // provider has an ambient credential in the daemon's environment.
+  function updateDetectedHint() {
+    var kind = kindEl.value;
+    detectedHint.hidden = true;
+    detectedHint.textContent = "";
+    if (detected[kind] && ENV_VARS[kind]) {
+      detectedHint.hidden = false;
+      detectedHint.textContent =
+        "✓ " + ENV_VARS[kind] +
+        " detected in the daemon's environment — leave the key blank to use it.";
+    }
+  }
+  // Keep the free-text model input as the source of truth. The dropdown is a
+  // convenience: picking a real model copies it into the text input; picking
+  // "Other / type manually" leaves the text input for hand entry.
+  modelSelect.addEventListener("change", function () {
+    if (modelSelect.value !== "__manual__") {
+      modelEl.value = modelSelect.value;
+    }
+  });
+  kindEl.addEventListener("change", updateDetectedHint);
+
+  fetch("/v1/provider/detected", { headers: headers }).then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }).then(function (d) {
+    detected.anthropic = !!d.anthropic;
+    detected.openai_compat = !!d.openai;
+    updateDetectedHint();
+  }).catch(function () { /* hint is best-effort */ });
+
   fetch("/v1/config", { headers: headers }).then(function (r) {
     if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
   }).then(function (cfg) {
     var p = cfg.provider || {};
-    document.getElementById("kind").value = p.kind || "mock";
-    document.getElementById("model").value = p.model || "";
+    kindEl.value = p.kind || "mock";
+    modelEl.value = p.model || "";
     document.getElementById("max_tokens").value = p.max_tokens || 4096;
     document.getElementById("temperature").value = p.temperature != null ? p.temperature : 0;
-    document.getElementById("endpoint").value = p.endpoint || "";
+    endpointEl.value = p.endpoint || "";
+    updateDetectedHint();
     setStatus("Loaded current settings.", true);
   }).catch(function (e) {
     setStatus("Could not load current settings: " + e.message, false);
   });
+
+  function providerPatch() {
+    var patch = { kind: kindEl.value, endpoint: endpointEl.value };
+    apiKeyPatch(patch);
+    return patch;
+  }
+
+  document.getElementById("fetchModels").addEventListener("click", function () {
+    setModelStatus("Fetching models…", false);
+    fetch("/v1/provider/models", {
+      method: "POST", headers: headers,
+      body: JSON.stringify({ provider: providerPatch() }),
+    }).then(function (r) {
+      return r.json().then(function (data) {
+        if (!r.ok) {
+          var msg = (data && data.message) ? data.message : ("HTTP " + r.status);
+          throw new Error(msg);
+        }
+        return data;
+      });
+    }).then(function (data) {
+      var models = (data && data.models) || [];
+      // Rebuild the dropdown, keeping the manual option first.
+      modelSelect.innerHTML = "";
+      var manual = document.createElement("option");
+      manual.value = "__manual__";
+      manual.textContent = "Other / type manually";
+      modelSelect.appendChild(manual);
+      models.forEach(function (m) {
+        var opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.display_name ? (m.display_name + " (" + m.id + ")") : m.id;
+        modelSelect.appendChild(opt);
+      });
+      // If the current text value matches a fetched model, preselect it.
+      var match = models.some(function (m) { return m.id === modelEl.value; });
+      modelSelect.value = match ? modelEl.value : "__manual__";
+      setModelStatus("Loaded " + models.length + " model(s). Pick one or type your own.", false);
+    }).catch(function (e) {
+      setModelStatus("Could not fetch models: " + e.message + " You can still type the model id.", true);
+    });
+  });
+
   document.getElementById("cfgForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     var body = { provider: {
-      kind: document.getElementById("kind").value,
-      model: document.getElementById("model").value,
+      kind: kindEl.value,
+      model: modelEl.value,
       max_tokens: Number(document.getElementById("max_tokens").value),
       temperature: Number(document.getElementById("temperature").value),
-      endpoint: document.getElementById("endpoint").value,
+      endpoint: endpointEl.value,
     }};
-    var apiKey = document.getElementById("api_key").value;
-    if (apiKey) body.provider.api_key = apiKey;
+    apiKeyPatch(body.provider);
     fetch("/v1/config", {
       method: "POST", headers: headers, body: JSON.stringify(body),
     }).then(function (r) {
@@ -734,7 +892,8 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
       return r.json();
     }).then(function () {
       setStatus("Saved.", true);
-      document.getElementById("api_key").value = "";
+      apiKeyEl.value = "";
+      clearKeyEl.checked = false;
     }).catch(function (e) {
       setStatus("Save failed: " + e.message, false);
     });

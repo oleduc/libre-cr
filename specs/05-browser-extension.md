@@ -17,7 +17,7 @@ The extension owns no LLM logic, no code intelligence, no conversation persisten
 
 These elements ported as-is or with minor edits:
 
-- **GitHub adapter and selectors** (`src/platform/github/adapter.ts`, `selectors.ts`). The selector versioning and shadow-DOM-piercing approach are correct and worth preserving. Selector list will need refresh by the time we build — GitHub markup changes.
+- **GitHub adapter and selectors** (`src/platform/github/adapter.ts`, `selectors.ts`). The selector versioning and shadow-DOM-piercing approach are correct and worth preserving. Selector list will need refresh by the time we build — GitHub markup changes. (It did: `utils/github/selectors.ts` now covers both the classic server-rendered PR page and the React "changes" UI that `/pull/<n>/files` redirects to — title, base/head refs, per-file `table[aria-label="Diff for: …"]`, `td[data-line-number][data-diff-side]`, and the head SHA from the embedded page JSON. `SELECTOR_VERSION = 2`.)
 - **Shadow DOM shell** (`createShadowRootUi`). Style isolation is required.
 - **Theme detection** (`src/ui/theme.ts`). GitHub dark/light + system-pref fallback.
 - **Floating widget mechanics** — drag, resize, tile, position memory. The Q&A panel is a floating widget. Tiling stays as a power-user feature; the tile grid is genuinely useful when the user wants two PRs open and pinned side-by-side.
@@ -27,7 +27,7 @@ These elements ported as-is or with minor edits:
 ## What Is Removed Or Replaced
 
 - The function/command runtime (`functions/runtime.ts`, registry, built-in functions). Replaced by direct calls to the daemon's HTTP/WS API.
-- Background service worker as LLM call host. Background script becomes a thin proxy for daemon communication (or is removed if content scripts can hold WS connections directly — see "Transport from a Content Script" below).
+- Background service worker as LLM call host. Background script is a thin relay for daemon communication (HTTP + WebSocket) — see "Transport from a Content Script" below.
 - API key storage. The extension no longer stores or sees the API key; that's the daemon's concern.
 - `UIController` as a tool-callable contract. The *contract* is replaced by the presentation-tools layer: the LLM calls a fixed set of presentation tools registered in the review daemon, the daemon routes them back over the WS as `presentation_call` frames, and the extension executes them locally using the POC's existing `UIController` implementations (highlight, annotate, scroll, navigate). The DOM-injection code itself carries over. See `09-presentation-tools.md`.
 
@@ -57,9 +57,15 @@ Same as POC: WXT + React + TypeScript. Manifest V3. Tailwind in Shadow DOM via W
 
 ## Transport from a Content Script
 
-Calling `127.0.0.1` from a content script's page-origin context is subject to CORS but otherwise works in modern browsers. The daemon explicitly allows the extension origin via the pairing dance. WebSocket has the same origin model.
+The content script **cannot** call `127.0.0.1` directly. Under MV3 a content script's `fetch`/`WebSocket` run with the **page's** origin (`https://github.com`) *and* the page's **CSP** — and github.com's `connect-src` does not include 127.0.0.1, so the request is blocked before it leaves the browser (`securitypolicyviolation`, surfaced as `Failed to fetch`). Found in manual testing; no daemon-side setting can fix a CSP GitHub sets.
 
-If a future browser tightens this, the fallback is to proxy all daemon traffic through the service worker, which has `host_permissions` for `127.0.0.1` and is not bound to the page origin. We design the daemon-client TS module so it can be hosted in either context.
+All daemon traffic from the content script is therefore relayed through the background service worker, which is bound to neither the page origin nor its CSP and has `host_permissions` for `127.0.0.1`:
+
+- HTTP: `DaemonClient` is constructed with `fetch: daemonFetch()` (`utils/daemon/proxy.ts`), which sends `{url, method, headers, body}` via `runtime.sendMessage`; the worker performs the fetch and returns `{status, statusText, headers, body}`, rebuilt into a `Response`.
+- WebSocket: `AskSession` gets `wsFactory: daemonWsFactory()`, a `WSLike` over a `runtime.connect` port; the worker owns the real socket and relays `open` / `message` / `error` / `close` frames. A dropped port surfaces as close code 1006.
+- Extension pages (popup, options) keep calling the daemon directly — they run in the extension origin with no page CSP.
+
+The daemon's CORS is `*`; the bearer token is the security boundary. The browser-E2E fixture page sets `connect-src 'self'` so the suite fails if the relay regresses.
 
 ## First-Run Pairing
 
@@ -162,7 +168,7 @@ A floating widget tied to the current session. Three regions:
 
 Behavior:
 
-- **Conversation scrolls.** New turns append at the bottom. Old turns collapse to single-line summaries; click to expand.
+- **Conversation scrolls.** New turns append at the bottom. Older turns collapse to single-line summaries when a new question lands; click a collapsed summary to expand. Collapse is a *controlled* prop owned by the panel (not seeded once from local component state), so the collapse-older behavior actually re-applies as the conversation grows.
 - **Thinking trace** is collapsed by default. Click expands to show the sequence of tool calls + truncated results. The reviewer should *want* to look at this when they're skeptical.
 - **Notes** look distinct from Q&A turns: gray background, no thinking trace, simple text.
 - **Verbs** are buttons. Clicking one immediately runs the verb against the current selection — no question text required. The result appears as a Q&A turn with the verb's name as the question.
@@ -189,17 +195,19 @@ A small subsystem in the extension that:
 - Tags every applied effect with `(session_id, turn_id, effect_id)` and tracks it in a session-scoped effect registry.
 - Sends back a `presentation_result` frame with `{ ok, result?: { effect_id }, error?, message? }`.
 
+A per-session **🔇 mute** toggle suppresses presentations for the current session. It is not cosmetic: when set, the extension sends `mute_presentations: true` in the WS `AskInit` frame, and the daemon responds by not registering the presentation tools for that turn at all — so the model never emits `presentation_call` frames while muted. As defense in depth the handler also gates locally: any stray `presentation_call` arriving during a muted session is answered with `{ ok: false, error: "presentation_muted" }` rather than executed, so the agent turn still completes. The mute state is persisted per session in `browser.storage.local`.
+
 Effects are cleared on:
-- User clicks "Clear all" in the Q&A panel footer.
+- User clicks "Clear all effects" in the Q&A panel footer.
 - User submits the next question and the "auto-clear" setting is on (default).
 - The user closes the Q&A panel.
 - Content script invalidation / navigation away.
 
-The Q&A panel gains a footer showing the count of currently-applied effects and a `Clear all` button:
+The Q&A panel gains a footer showing the count of currently-applied effects and a `Clear all effects` button:
 
-```
+```text
 ─────────────────────────────────────────
- 2 highlights · 1 annotation · [Clear all]
+ 2 highlights · 1 annotation · [Clear all effects]
 ─────────────────────────────────────────
 ```
 
@@ -218,16 +226,18 @@ Settings (options page) for presentation behavior:
 | `daemon.extension_origin` | `chrome-extension://<id>` | What the daemon will allow via CORS |
 | `ui.theme_override` | `"system" \| "dark" \| "light"` | Optional |
 | `ui.panel_position` | `{ x, y, width, height }` per `pr_url` | Persisted floating widget geometry |
+| `session.presentations_muted` | `Record<session_id, bool>` | Per-session 🔇 mute state |
+| `ui.protocol_mismatch` | `{ at, daemon, extension }` or absent | Set by the soft protocol-version check; surfaced in Options diagnostics |
 
 Nothing about conversations, sessions, or PRs lives here. The daemon is the source of truth.
 
 ## Background Service Worker
 
-Minimal in v2:
+Thin relay for the content script's daemon traffic (see § Transport from a Content Script — the direct path is blocked by GitHub's CSP):
 
-- `OPEN_OPTIONS_PAGE` → opens options.
-- (Optional) Proxy for daemon traffic if a future browser forbids the content script direct path.
-- Lifecycle: not much. The worker can sleep.
+- `libre-cr/fetch` message → performs the HTTP request, answers `{status, statusText, headers, body}`.
+- `libre-cr/ws` port → owns the WebSocket for one ask turn, relays frames both ways; closes the socket when the port disconnects.
+- Lifecycle: an open port / active WebSocket keeps the worker alive for the turn; otherwise it can sleep.
 
 ## Popup
 
@@ -235,19 +245,24 @@ The extension popup (toolbar icon) shows:
 
 - Daemon status (connected / not paired / unreachable).
 - A list of recent sessions across all PRs (top 5).
-- A "Configure daemon" button → opens daemon's config UI in a new tab.
+- A "Configure daemon" link → opens the daemon's config UI in a new tab, with the bearer token appended as `?token=` (`<endpoint>/config-ui?token=<token>`) so the page can authenticate its JSON calls without a separate login.
 - A "Pair extension" button → opens the extension's options page.
 
 Useful for jumping back to a PR you reviewed yesterday without having to navigate GitHub.
 
 ## Options Page
 
-- **Daemon pairing** (endpoint + token).
+- **Daemon pairing** (endpoint + token). Accepts a typed pairing code and also handles pairing **deep-links** (`?endpoint=…&code=…`): when the options page is opened with those query params it pre-fills and can auto-complete pairing. This is the default pairing path (option **B** above); manual code entry remains the fallback.
 - **Theme override.**
+- **Presentation settings** — auto-clear on new question (default on), `open_link` target toggles, and a global "disable presentation tools" switch.
 - **Per-PR panel reset** (clears stored positions).
-- **Diagnostics** (last daemon error, time of last successful call).
+- **Diagnostics** (last daemon error, time of last successful call, and any protocol-version mismatch recorded by the soft health check).
 
 Provider/LLM/API-key config is **not** here. That's on the daemon's config UI.
+
+### Protocol-version check
+
+On session init the extension reads `protocol_version` from `GET /v1/health` and compares it to its own `PROTOCOL_VERSION` constant (mirrored from `libre-cr-common`). A mismatch never blocks anything — minor versions are wire-compatible by spec — it logs a console warning and records `ui.protocol_mismatch` for the Options diagnostics panel. A missing field (an older, pre-versioning daemon) is treated as compatible.
 
 ## Error Surfaces
 

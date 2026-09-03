@@ -20,6 +20,64 @@ function buildDiffFixture(): HTMLElement {
   return container;
 }
 
+function buildReactUiFixture(): HTMLElement {
+  const table = document.createElement("table");
+  table.setAttribute("aria-label", "Diff for: src/b.rs");
+  table.innerHTML =
+    '<tbody><tr class="diff-line-row">' +
+    '<td class="focusable-grid-cell new-diff-line-number" data-diff-side="left" data-line-number="7">7</td>' +
+    '<td class="focusable-grid-cell new-diff-line-number" data-diff-side="right" data-line-number="8">8</td>' +
+    '<td class="diff-text-cell focusable-grid-cell" data-diff-side="right" data-line-number="8">let x = 1;</td>' +
+    "</tr></tbody>";
+  document.body.appendChild(table);
+  return table;
+}
+
+describe("SelectionLayer — GitHub React 'changes' UI", () => {
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = "";
+  });
+
+  it("selects a line from the new DOM's cells", () => {
+    const table = buildReactUiFixture();
+    const onSelect = vi.fn<(s: Selection | null) => void>();
+    render(<SelectionLayer onSelect={onSelect} />);
+    fireEvent.click(table.querySelector("td.diff-text-cell")!);
+    expect(onSelect).toHaveBeenCalledWith({ kind: "line", file: "src/b.rs", line: 8, text: "let x = 1;" });
+  });
+});
+
+describe("SelectionLayer — symbol pick uses the clicked cell", () => {
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = "";
+  });
+
+  it("cmd-click on the right code cell of a replacement row reads right-side text", () => {
+    const table = document.createElement("table");
+    table.setAttribute("aria-label", "Diff for: src/c.rs");
+    table.innerHTML =
+      '<tbody><tr class="diff-line-row">' +
+      '<td class="focusable-grid-cell new-diff-line-number" data-diff-side="left" data-line-number="4">4</td>' +
+      '<td class="diff-text-cell focusable-grid-cell" data-diff-side="left" data-line-number="4">old_name</td>' +
+      '<td class="focusable-grid-cell new-diff-line-number" data-diff-side="right" data-line-number="5">5</td>' +
+      '<td class="diff-text-cell focusable-grid-cell" data-diff-side="right" data-line-number="5">new_name</td>' +
+      "</tbody></tr>";
+    document.body.appendChild(table);
+    const onSelect = vi.fn<(s: Selection | null) => void>();
+    render(<SelectionLayer onSelect={onSelect} />);
+    const right = table.querySelector('td.diff-text-cell[data-diff-side="right"]')!;
+    fireEvent.click(right, { metaKey: true });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    const sel = onSelect.mock.calls[0]![0]!;
+    expect(sel.kind).toBe("symbol");
+    expect((sel as { identifier: string }).identifier).toBe("new_name");
+    // The quoted text must come from the clicked (right) side too.
+    expect((sel as { text?: string }).text).toBe("new_name");
+  });
+});
+
 describe("SelectionLayer — click scoping (I14)", () => {
   afterEach(() => {
     cleanup();
@@ -32,7 +90,7 @@ describe("SelectionLayer — click scoping (I14)", () => {
     render(<SelectionLayer onSelect={onSelect} />);
 
     fireEvent.click(container.querySelector("td.blob-num")!);
-    expect(onSelect).toHaveBeenCalledWith({ kind: "line", file: "src/a.ts", line: 3 });
+    expect(onSelect).toHaveBeenCalledWith({ kind: "line", file: "src/a.ts", line: 3, text: "foolink" });
   });
 
   it("cmd-click on a diff code cell picks a symbol", () => {

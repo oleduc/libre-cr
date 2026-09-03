@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::config::ScriptedEvent;
 use crate::error::Result;
 
-use super::{Message, Provider, StreamEvent, ToolSchema};
+use super::{Message, ModelInfo, Provider, StreamEvent, ToolSchema};
 
 /// Provider that replays a script. Each call to `stream` consumes the next
 /// "burst" — events up to and including the next `Done` (or `Error`).
@@ -19,9 +19,13 @@ use super::{Message, Provider, StreamEvent, ToolSchema};
 /// This lets the agent loop drive several LLM rounds within one test scenario:
 /// burst 1 emits a `tool_use` then `Done`, the agent dispatches the tool,
 /// loops, and we replay burst 2 with the final `text_delta` + `Done`.
+///
+/// Once every burst has been consumed the script starts over, so a manual
+/// `kind = "mock"` daemon answers every question, not just the first.
 #[derive(Clone)]
 pub struct MockProvider {
     id: String,
+    script: Arc<Vec<ScriptedEvent>>,
     queue: Arc<Mutex<Vec<ScriptedEvent>>>,
 }
 
@@ -29,6 +33,7 @@ impl MockProvider {
     pub fn new(events: Vec<ScriptedEvent>) -> Self {
         Self {
             id: "mock".into(),
+            script: Arc::new(events.clone()),
             queue: Arc::new(Mutex::new(events)),
         }
     }
@@ -46,11 +51,15 @@ impl Provider for MockProvider {
         _tools: &[ToolSchema],
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
         // Pull events for this turn: everything until (and including) the
-        // next terminator (`Done` or `Error`). If the queue is empty, the
-        // stream is empty (the agent loop will error out cleanly).
+        // next terminator (`Done` or `Error`). An exhausted queue is refilled
+        // from the script; an empty script yields an empty stream (the agent
+        // loop errors out cleanly).
         let mut burst = Vec::new();
         {
             let mut q = self.queue.lock().await;
+            if q.is_empty() {
+                *q = self.script.as_ref().clone();
+            }
             while let Some(ev) = q.first().cloned() {
                 q.remove(0);
                 let is_terminator = matches!(
@@ -74,6 +83,21 @@ impl Provider for MockProvider {
 
     async fn validate(&self) -> Result<()> {
         Ok(())
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        // Canned list so the config-UI "Fetch models" flow is testable
+        // without any network access.
+        Ok(vec![
+            ModelInfo {
+                id: "mock-fast".into(),
+                display_name: Some("Mock Fast".into()),
+            },
+            ModelInfo {
+                id: "mock-smart".into(),
+                display_name: Some("Mock Smart".into()),
+            },
+        ])
     }
 }
 

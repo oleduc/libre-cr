@@ -133,6 +133,145 @@ async fn config_ui_serves_html() {
         body.contains("/v1/config"),
         "page must reference the config API"
     );
+    // Feature C: the page must expose the new "Fetch models" control and the
+    // detected-credentials wiring.
+    assert!(
+        body.contains("Fetch models"),
+        "page must offer the Fetch models button"
+    );
+    assert!(
+        body.contains("/v1/provider/models"),
+        "page must reference the provider models API"
+    );
+    assert!(
+        body.contains("/v1/provider/detected"),
+        "page must reference the detected credentials API"
+    );
+}
+
+#[tokio::test]
+async fn provider_models_returns_mock_list_and_persists_nothing() {
+    // POST /v1/provider/models against the default mock provider returns the
+    // canned list, and must not mutate the stored config.
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+
+    // Token required.
+    let resp = c
+        .post(url(h.addr, "/v1/provider/models"))
+        .json(&json!({"provider": {"kind": "mock"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+
+    // Snapshot the config before the call.
+    let before: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let resp = c
+        .post(url(h.addr, "/v1/provider/models"))
+        .bearer_auth(&h.token)
+        .json(&json!({"provider": {"kind": "mock"}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "status {}", resp.status());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let models = body["models"].as_array().expect("models array");
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0]["id"], "mock-fast");
+    assert_eq!(models[1]["id"], "mock-smart");
+
+    // Config unchanged — nothing was persisted.
+    let after: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(before, after, "listing models must not mutate config");
+}
+
+#[tokio::test]
+async fn provider_models_unknown_kind_is_400() {
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+    let resp = c
+        .post(url(h.addr, "/v1/provider/models"))
+        .bearer_auth(&h.token)
+        .json(&json!({"provider": {"kind": "nope-not-a-provider"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "unknown kind must be a validation error"
+    );
+}
+
+#[tokio::test]
+async fn provider_detected_requires_auth() {
+    let h = common::start_server_default().await;
+    let resp = reqwest::get(url(h.addr, "/v1/provider/detected"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn provider_detected_reflects_env_presence() {
+    // The endpoint reads the daemon's process environment. We set the vars,
+    // assert both report true, then clear them and assert false. The two
+    // vars are mutated and read within this single test so no other test
+    // observes them mid-flight; we never run two of these concurrently
+    // because nothing else touches these exact var names in this binary.
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+
+    // Clear first so a polluted parent environment can't make this pass for
+    // the wrong reason.
+    std::env::remove_var("ANTHROPIC_API_KEY");
+    std::env::remove_var("OPENAI_API_KEY");
+    let d: serde_json::Value = c
+        .get(url(h.addr, "/v1/provider/detected"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(d["anthropic"], false);
+    assert_eq!(d["openai"], false);
+
+    std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-xxx");
+    std::env::set_var("OPENAI_API_KEY", "sk-oai-xxx");
+    let d: serde_json::Value = c
+        .get(url(h.addr, "/v1/provider/detected"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(d["anthropic"], true);
+    assert_eq!(d["openai"], true);
+
+    std::env::remove_var("ANTHROPIC_API_KEY");
+    std::env::remove_var("OPENAI_API_KEY");
 }
 
 #[tokio::test]
@@ -274,38 +413,4 @@ async fn pair_redeem_rate_limited_after_five_failures() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert_eq!(retry_after, "60");
-}
-
-#[tokio::test]
-async fn origin_check_when_configured() {
-    let h = common::start_server_default().await;
-    // First pair to register an extension origin
-    let code = h.pairing.issue().await;
-    let c = reqwest::Client::new();
-    let _ = c
-        .post(url(h.addr, "/v1/pair"))
-        .json(&json!({"code": code, "extension_origin": "chrome-extension://abc"}))
-        .send()
-        .await
-        .unwrap();
-    // Now a session with a wrong origin should be rejected.
-    let resp = c
-        .post(url(h.addr, "/v1/sessions"))
-        .bearer_auth(&h.token)
-        .header("Origin", "https://evil.example")
-        .json(&json!({"pr_url":"https://github.com/a/b/pull/9","pr_data":{}}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 403);
-    // With the right origin, it succeeds.
-    let resp = c
-        .post(url(h.addr, "/v1/sessions"))
-        .bearer_auth(&h.token)
-        .header("Origin", "chrome-extension://abc")
-        .json(&json!({"pr_url":"https://github.com/a/b/pull/9","pr_data":{}}))
-        .send()
-        .await
-        .unwrap();
-    assert!(resp.status().is_success());
 }

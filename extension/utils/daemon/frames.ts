@@ -25,6 +25,12 @@ export interface AskInit {
    * instead of executing it (see `utils/presentation/index.ts`).
    */
   mute_presentations?: boolean;
+  /**
+   * Daemon turn ids whose tool results should be replayed at full fidelity
+   * for this ask — the turns the reviewer has expanded in the panel. Ids not
+   * belonging to the session are ignored by the daemon.
+   */
+  context_turn_ids?: string[];
 }
 
 export interface UsageTally {
@@ -129,11 +135,24 @@ export interface CreateSessionResponse {
   head_sha?: string | null;
 }
 
+/** One stored turn as `GET /v1/sessions/:id` serializes it. */
+export interface SessionTurnRow {
+  turn_id: string;
+  kind: "question" | "note";
+  status: "ok" | "cancelled" | "error";
+  question?: string;
+  answer?: string;
+  user_content?: string;
+  severity?: "info" | "suggestion" | "warning" | "critical";
+  selection?: unknown;
+}
+
 export interface GetSessionResponse {
   session: SessionSummary & { pr_data?: unknown; head_sha?: string | null };
-  turns: unknown[];
+  turns: SessionTurnRow[];
   worktree_ready: boolean;
-  status?: { state?: string; message?: string } | null;
+  /** Worktree orchestration status; `error` is set when `state` is `failed`. */
+  status?: { state?: unknown; error?: string | null; pending_action?: string | null } | null;
   head_sha?: string | null;
   last_seen_at?: number | null;
 }

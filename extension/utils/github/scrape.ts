@@ -6,6 +6,7 @@
 
 import type { ScrapedPRData } from "../daemon/client";
 import { isPullRequestPage } from "./detect";
+import { filePathOf } from "./diff";
 import { SELECTORS } from "./selectors";
 
 export interface ScrapeOutput {
@@ -54,10 +55,20 @@ export function scrapePr(doc: ParentNode = globalThis.document): ScrapeOutput {
   const titleEl = safeQuery<HTMLElement>(doc, SELECTORS.prHeaderTitle, warnings, "title");
   const descEl = safeQuery<HTMLElement>(doc, SELECTORS.prDescription, warnings, "description");
   const authorEl = safeQuery<HTMLElement>(doc, SELECTORS.prAuthor, warnings, "author");
-  const baseEl = safeQuery<HTMLElement>(doc, SELECTORS.baseBranch, warnings, "base_branch");
-  const headEl = safeQuery<HTMLElement>(doc, SELECTORS.headBranch, warnings, "head_branch");
+  let baseEl = safeQuery<HTMLElement>(doc, SELECTORS.baseBranch, warnings, "base_branch");
+  let headEl = safeQuery<HTMLElement>(doc, SELECTORS.headBranch, warnings, "head_branch");
+  if (!baseEl && !headEl) {
+    // React UI: same class on both refs; base precedes head.
+    const refs = safeQueryAll<HTMLElement>(doc, SELECTORS.branchRefs, warnings, "branch_refs");
+    baseEl = refs[0] ?? null;
+    headEl = refs[1] ?? null;
+  }
   const headShaEl = safeQuery<HTMLMetaElement>(doc, SELECTORS.headShaMeta, warnings, "head_sha");
-  const head_sha = headShaEl?.getAttribute("content") ?? null;
+  const head_sha =
+    headShaEl?.getAttribute("content") ??
+    safeQuery<HTMLScriptElement>(doc, SELECTORS.embeddedData, warnings, "embedded_data")
+      ?.textContent?.match(/"headOid":"([0-9a-f]{40})"/)?.[1] ??
+    null;
 
   const files: string[] = [];
   for (const el of safeQueryAll<HTMLElement>(
@@ -66,7 +77,7 @@ export function scrapePr(doc: ParentNode = globalThis.document): ScrapeOutput {
     warnings,
     "files_changed",
   )) {
-    const path = el.getAttribute("data-tagsearch-path");
+    const path = filePathOf(el);
     if (path) files.push(path);
   }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { DaemonClient } from "../utils/daemon/client";
+import { daemonWsFactory } from "../utils/daemon/proxy";
 import { AskSession } from "../utils/daemon/ws";
 import type { VerbDescriptor } from "../utils/daemon/frames";
 import { getKey, setKey } from "../utils/daemon/storage";
@@ -9,10 +10,13 @@ import type { Selection } from "../utils/selection";
 import { selectionLabel, selectionSatisfies } from "../utils/selection";
 import { ConversationTurn, type NoteSeverity, type Turn } from "./ConversationTurn";
 import { ExportModal } from "./ExportModal";
+import { TourWidget } from "./TourWidget";
 
 export interface QaPanelProps {
   client: DaemonClient;
   sessionId: string;
+  /** Conversation restored from the daemon (page reload / reopened PR). */
+  initialTurns?: Turn[];
   prSlug: string;
   selection: Selection | null;
   onClearSelection: () => void;
@@ -29,10 +33,35 @@ const newTurnId = () => `t_${++turnSeq}_${Date.now()}`;
 
 export function QaPanel(props: QaPanelProps) {
   const [verbs, setVerbs] = useState<VerbDescriptor[]>([]);
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [turns, setTurns] = useState<Turn[]>(props.initialTurns ?? []);
+  // Current turns, readable inside runAsk without adding a state dep.
+  const turnsRef = useRef<Turn[]>(props.initialTurns ?? []);
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
+  // A late-arriving restore only fills an untouched conversation.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || !props.initialTurns?.length) return;
+    restoredRef.current = true;
+    setTurns((t) => (t.length === 0 ? props.initialTurns! : t));
+  }, [props.initialTurns]);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
-  const [effects, setEffects] = useState({ highlights: 0, annotations: 0 });
+  const [effects, setEffects] = useState({ highlights: 0, annotations: 0, steps: 0 });
+  /** Replay cursor into the current turn's presentation steps (-1 = none). */
+  const [stepIndex, setStepIndex] = useState(-1);
+  const [labelsVisible, setLabelsVisible] = useState(true);
+  const [tourOpen, setTourOpen] = useState(false);
+  /** Armed = opened by the assistant's presentation, waiting for the reviewer's first click. */
+  const [tourArmed, setTourArmed] = useState(false);
+  const autoOpenedRef = useRef(false);
+  const openTour = useCallback((i: number) => {
+    setTourOpen(true);
+    setTourArmed(false);
+    setStepIndex(i);
+    void presentationRef.current.showStep(i);
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -43,7 +72,18 @@ export function QaPanel(props: QaPanelProps) {
   useEffect(() => {
     const m = presentationRef.current;
     const off = m.onChange((mm) => {
-      setEffects({ highlights: mm.highlightsCount, annotations: mm.annotationsCount });
+      setEffects({
+        highlights: mm.highlightsCount,
+        annotations: mm.annotationsCount,
+        steps: mm.steps.length,
+      });
+      // The assistant's first presentation call of a turn opens the tour,
+      // armed: nothing scrolls until the reviewer clicks.
+      if (mm.steps.length > 0 && !autoOpenedRef.current) {
+        autoOpenedRef.current = true;
+        setTourArmed(true);
+        setTourOpen(true);
+      }
     });
     return () => {
       off();
@@ -153,9 +193,23 @@ export function QaPanel(props: QaPanelProps) {
       if (asking) return;
       setAsking(true);
       setError(null);
-      // Auto-clear previous effects.
+      // Auto-clear previous effects and start a fresh replay list.
       presentationRef.current.clearAll();
+      presentationRef.current.resetSteps();
+      setStepIndex(-1);
+      setTourOpen(false);
+      setTourArmed(false);
+      autoOpenedRef.current = false;
       const turnId = newTurnId();
+      // Turns the reviewer left expanded carry their tool results into this
+      // ask: their daemon ids go on the wire and the daemon replays those
+      // turns at full fidelity.
+      const contextTurnIds: string[] = [];
+      for (const t of turnsRef.current) {
+        if (t.kind === "qa" && t.collapsed !== true && t.daemonTurnId) {
+          contextTurnIds.push(t.daemonTurnId);
+        }
+      }
       // Mark earlier qa turns collapsed.
       setTurns((all) =>
         all.map((t) => (t.kind === "qa" ? { ...t, collapsed: true } : t)),
@@ -164,6 +218,7 @@ export function QaPanel(props: QaPanelProps) {
         kind: "qa",
         id: turnId,
         question: questionText,
+        sel: props.selection ? selectionLabel(props.selection) : undefined,
         answer: "",
         thinking: [],
         pending: true,
@@ -174,6 +229,7 @@ export function QaPanel(props: QaPanelProps) {
         props.client.auth.endpoint,
         props.client.auth.token,
         props.sessionId,
+        { wsFactory: daemonWsFactory() },
       );
       presentationRef.current.attach(session);
       session.on("text_delta", (f) => {
@@ -189,6 +245,15 @@ export function QaPanel(props: QaPanelProps) {
             t.kind === "qa" && t.id === turnId
               ? { ...t, thinking: [...(t.thinking ?? []), { call_id: f.call_id, name: f.name }] }
               : t,
+          ),
+        );
+      });
+      session.on("done", (f) => {
+        // Remember the daemon's id so a later ask can name this turn in
+        // context_turn_ids while it stays expanded.
+        setTurns((all) =>
+          all.map((t) =>
+            t.kind === "qa" && t.id === turnId ? { ...t, daemonTurnId: f.turn_id } : t,
           ),
         );
       });
@@ -212,6 +277,7 @@ export function QaPanel(props: QaPanelProps) {
           selection: props.selection ?? undefined,
           verb,
           mute_presentations: presentationsMuted || undefined,
+          context_turn_ids: contextTurnIds.length ? contextTurnIds : undefined,
         });
       } catch (e) {
         const msg = (e as Error).message;
@@ -471,9 +537,49 @@ export function QaPanel(props: QaPanelProps) {
           {effects.highlights} highlight{effects.highlights === 1 ? "" : "s"} ·{" "}
           {effects.annotations} annotation{effects.annotations === 1 ? "" : "s"}
         </span>
-        <button onClick={() => presentationRef.current.clearAll()}>Clear all</button>
+        {effects.steps > 0 ? (
+          <button
+            className="primary"
+            data-testid="start-tour"
+            title="Step through what the assistant highlighted, with its explanation"
+            onClick={() => openTour(0)}
+          >
+            Tour ({effects.steps})
+          </button>
+        ) : null}
+        <button
+          aria-pressed={labelsVisible}
+          title={labelsVisible ? "Hide the captions next to highlights" : "Show the captions next to highlights"}
+          onClick={() => {
+            const v = !labelsVisible;
+            setLabelsVisible(v);
+            presentationRef.current.setLabelsVisible(v);
+          }}
+        >
+          {labelsVisible ? "Captions on" : "Captions off"}
+        </button>
+        <button
+          onClick={() => presentationRef.current.clearAll()}
+          title="Remove highlights and annotations from the diff (the conversation stays)"
+        >
+          Clear all effects
+        </button>
       </div>
       {error ? <div className="libre-cr-error">{error}</div> : null}
+      {tourOpen && effects.steps > 0 ? (
+        <TourWidget
+          steps={presentationRef.current.steps}
+          index={Math.max(0, stepIndex)}
+          armed={tourArmed}
+          onStart={() => openTour(0)}
+          onStep={openTour}
+          onShowAll={() => {
+            setStepIndex(effects.steps - 1);
+            void presentationRef.current.replayTo();
+          }}
+          onClose={() => setTourOpen(false)}
+        />
+      ) : null}
       {exportOpen ? (
         <ExportModal
           client={props.client}

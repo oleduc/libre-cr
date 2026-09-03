@@ -24,7 +24,7 @@ This iteration replaces the LLM-orchestrated function model with a human-driven 
 - **Human drives.** The LLM is invoked when the reviewer asks. It does not autonomously decide what to highlight, annotate, or summarize.
 - **Repo-grounded.** Every answer is rooted in the user's local checkout — actual file contents, git history, cross-file structure — not just the diff hunks.
 - **Answers can demonstrate themselves.** When it helps, the LLM can highlight the line it's citing, scroll the diff to a location, or surface a link — through a bounded set of *presentation tools*. These amplify the answer; they do not replace it, and they never run without a user-initiated question. See `09-presentation-tools.md`.
-- **Local-first.** All code intelligence and conversation state stays on the user's machine. The LLM provider is the only network dependency, and the user configures it.
+- **Local-first.** All code intelligence and conversation state stays on the user's machine. The LLM provider is the only network dependency, and the user configures it. Configuration happens in the daemon's own config UI; the API key never leaves the daemon. For users who already have an `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in their environment, the daemon can use it directly so there is no key to paste at all (see below).
 - **Composable via MCP.** The code daemon is a standalone MCP server with value beyond our review extension. Other MCP clients (Claude Code, Claude Desktop, IDE plugins, future surfaces) can use it directly.
 - **No GitHub tokens required.** PR content is read via DOM scraping in the extension, the same approach the POC validated. Posting back to GitHub is optional and deferred to a later phase.
 - **Native by default.** The daemons are single Rust binaries. No Python, Node, or other runtime required to use the product.
@@ -70,6 +70,16 @@ The verbs are not magic. They are well-tuned prompts that drive the same agent l
 | Code intelligence (phase B) | ast-grep + ripgrep + tree-sitter + gitoxide | Native Rust, fast, no external runtime |
 | Code intelligence (phase C) | + LSP client (`async-lsp` / `lsp-types`) | Semantic accuracy for cross-file references |
 | LLM providers | Anthropic + OpenAI-compatible (incl. Ollama) | Carries forward the POC's provider model |
+
+### LLM provider and credentials
+
+The user picks a provider in the daemon's config UI (`/config-ui`). Three provider kinds are built in:
+
+- **`mock`** — no network; canned responses for local development and tests.
+- **`anthropic`** — official Messages API.
+- **`openai_compat`** — OpenAI-compatible chat completions (api.openai.com, OpenRouter, Ollama, any compatible endpoint).
+
+Credential resolution for `anthropic` / `openai_compat`: a key saved through the config UI (stored encrypted) always wins; if none is saved, the daemon falls back to the standard ambient environment variable (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`). The config UI reports which ambient credentials it detected so the user can leave the key field blank. For `anthropic`, the config UI can also fetch the live model list from the provider so the user picks a model instead of typing an id.
 
 ## Phased Plan At A Glance
 

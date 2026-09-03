@@ -7,6 +7,7 @@ import { createElement } from "react";
 
 import { ContentApp } from "../../components/ContentApp";
 import { isPullRequestPage } from "../../utils/github/detect";
+import { installEffectStyles } from "../../utils/presentation/page-styles";
 
 export default defineContentScript({
   matches: ["*://github.com/*/pull/*"],
@@ -38,7 +39,16 @@ export default defineContentScript({
       host.id = "libre-cr-root";
       // Avoid being affected by GitHub's CSS.
       host.style.all = "initial";
+      // Highlights/annotations land on GitHub's rows, outside the shadow root.
+      installEffectStyles(document);
       const shadow = host.attachShadow({ mode: "open" });
+      // Keystrokes inside the panel bubble to `document` retargeted to this
+      // host <div>, so GitHub's hotkey handler sees a non-editable target and
+      // fires shortcuts ("t" → search, "s", "/", …). Stop them at the boundary;
+      // React's own listeners live on `mount` inside the shadow and still fire.
+      for (const type of ["keydown", "keypress", "keyup"]) {
+        host.addEventListener(type, (e) => e.stopPropagation());
+      }
       const styleEl = document.createElement("style");
       // Inject the styles. Lazy-loaded via dynamic import would split chunks;
       // a static import keeps the bundle simple.

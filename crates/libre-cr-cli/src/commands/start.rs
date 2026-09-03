@@ -39,6 +39,20 @@ pub async fn run(autostart: bool) -> Result<()> {
 
     logs::supervisor_event("start-requested").await.ok();
 
+    // Remove any endpoint file left by a previous run *before* spawning, so
+    // the watcher below announces the fresh daemon's port rather than a stale
+    // one (the daemon uses an ephemeral port by default, so the old contents
+    // are almost always wrong). Found by manual testing: the banner printed a
+    // dead endpoint from the prior session.
+    if let Err(e) = std::fs::remove_file(paths::endpoint_file()) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "libre-cr: warning: could not remove stale endpoint file {}: {e}",
+                paths::endpoint_file().display()
+            );
+        }
+    }
+
     // First-run summary, printed *before* we hand the foreground to the
     // supervisor. We can't know the daemon's chosen port until it writes
     // the endpoint file, so we poll for that with a 5 s budget on a side
@@ -51,10 +65,21 @@ pub async fn run(autostart: bool) -> Result<()> {
     // Cancellation: SIGINT/SIGTERM trigger the supervisor's graceful path.
     spawn_signal_handler(cancel_tx);
 
-    // Endpoint-watcher: announce the URL once the daemon writes it.
-    let watcher = tokio::spawn(async {
+    // Endpoint-watcher: announce the URL once the daemon writes it. Only a
+    // file written after this start counts — if the stale-file removal above
+    // failed, announcing its contents would print a dead port.
+    let started_at = std::time::SystemTime::now();
+    let watcher = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while tokio::time::Instant::now() < deadline {
+            let fresh = std::fs::metadata(paths::endpoint_file())
+                .and_then(|m| m.modified())
+                .map(|t| t >= started_at)
+                .unwrap_or(false);
+            if !fresh {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
             if let Ok(Some(endpoint)) = crate::config::read_endpoint() {
                 println!("  endpoint: {endpoint}");
                 println!("  token:    {}", paths::token_file().display());

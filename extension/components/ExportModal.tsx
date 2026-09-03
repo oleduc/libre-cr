@@ -45,12 +45,17 @@ export function buildExportBody(
   content: ExportContent,
   format: ExportFormatChoice,
   severityMin: SeverityMin,
+  includeToolIo = false,
 ): Record<string, unknown> {
   return {
     format: format === "markdown" ? "markdown" : "github_review",
     filter: {
       include_thinking: content !== "notes_only",
       severity_min: severityMin === "any" ? null : severityMin,
+      // Debug log: every tool call's input and result. Only meaningful with
+      // context, and only the markdown export renders it — a GitHub review
+      // must not silently drop a requested log.
+      include_tool_io: includeToolIo && content !== "notes_only" && format === "markdown",
     },
   };
 }
@@ -60,6 +65,7 @@ const FOCUSABLE_SELECTOR =
 
 export function ExportModal({ client, sessionId, onClose }: ExportModalProps) {
   const [content, setContent] = useState<ExportContent>("notes_only");
+  const [includeToolIo, setIncludeToolIo] = useState(false);
   const [format, setFormat] = useState<ExportFormatChoice>("markdown");
   const [severityMin, setSeverityMin] = useState<SeverityMin>("any");
   const [busy, setBusy] = useState(false);
@@ -112,7 +118,7 @@ export function ExportModal({ client, sessionId, onClose }: ExportModalProps) {
     setError(null);
     setResult(null);
     try {
-      const body = buildExportBody(content, format, severityMin);
+      const body = buildExportBody(content, format, severityMin, includeToolIo);
       const r = (await client.exportSession(sessionId, body)) as ExportResponseShape;
       setResult(r);
       if (format === "markdown") {
@@ -189,6 +195,16 @@ export function ExportModal({ client, sessionId, onClose }: ExportModalProps) {
               onChange={() => setContent("full_transcript")}
             />{" "}
             Full transcript (for personal reference)
+          </label>
+          <label style={{ display: "block", fontSize: 13, marginTop: 6 }}>
+            <input
+              type="checkbox"
+              data-testid="include-tool-io"
+              checked={includeToolIo}
+              disabled={content === "notes_only" || format === "github_review"}
+              onChange={(e) => setIncludeToolIo(e.target.checked)}
+            />{" "}
+            Include tool call log (every input and result — for debugging)
           </label>
         </section>
         <section style={{ marginTop: 12 }}>

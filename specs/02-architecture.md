@@ -183,19 +183,26 @@ To use the code daemon directly with no review-daemon involvement:
 
 - Daemon binds 127.0.0.1 on a port read from a config file (default ephemeral, written on startup).
 - Token authentication: daemon writes a 256-bit bearer token to `~/.config/libre-cr/token` (mode 0600). Extension reads it via the WXT options page on first use, stores it in `browser.storage.local`. Token is included as `Authorization: Bearer <token>` on every request.
-- Origin check: daemon rejects requests whose `Origin` header is not from a configured browser extension origin (set during the extension's first-run setup).
-- CORS: daemon explicitly allows the extension's origin.
+- Origin recording: the extension origin learned at pairing is persisted for diagnostics only. It is never enforced — the bearer token is the sole request boundary (see the CORS bullet below).
+- CORS: permissive (`*`). The bearer token is the boundary; content-script requests carry the page origin under MV3, so an extension-origin allowlist would block the product.
 - One-shot requests use HTTP POST (init, export, list sessions). Streaming responses (ask) use WebSocket.
 - The WebSocket carries two distinct directions of streaming during a turn:
   - **Daemon → extension:** `text_delta`, `tool_call`, `tool_result`, `presentation_call`, `done`, `error`.
   - **Extension → daemon:** initial `{question, selection, verb}` frame, then `presentation_result` frames in response to each `presentation_call`.
 - See `04-review-daemon.md` for the HTTP API surface and `09-presentation-tools.md` for the presentation frame protocol.
+- The daemon also serves a self-contained configuration web page at `GET /config-ui` (static HTML, token passed via `?token=`) and supporting JSON routes the page consumes: `POST /v1/provider/models` (fetch a candidate provider's live model list) and `GET /v1/provider/detected` (report which ambient env-var keys are available). This page is opened by the wrapper's `libre-cr config` and by the extension popup's "Configure daemon" link, not embedded in the extension. CORS is dynamic: the allowlist is read on every request from the live extension-origin value, so an origin learned during pairing takes effect without a daemon restart.
 
 ### Review daemon ↔ code daemon: MCP over stdio
 
 - Review daemon spawns code daemon as a child process by default. stdio MCP — no port, no auth.
 - Power user mode: review daemon can be configured to connect to an existing code daemon over a Unix socket. Useful when the code daemon is run independently (e.g., for use with Claude Desktop) and the review daemon should reuse it.
 - Tool schemas defined by the code daemon; review daemon dynamically discovers and registers them at startup.
+
+### Typed HTTP wire contract
+
+The review daemon's HTTP response bodies are defined as `Serialize`/`Deserialize` structs in `libre-cr-common` (`http_api.rs`) — `HealthResponse`, `CreateSessionResponse`, `SessionSummary`, `PairIssueResponse`, `PairRedeemResponse`, `SearchResponse`, `ExportResponse`, `ModelsResponse`, `DetectedCredentials`, `VerbDescriptor`, and friends. The Rust side is the source of truth; the extension's `frames.ts` mirrors these shapes. Field renames are breaking changes. This replaces the earlier pattern of building responses from ad-hoc `json!` literals, which had let the Rust and TS shapes drift independently.
+
+The shared crate also defines `PROTOCOL_VERSION` (currently `1`). The daemon reports it in `GET /v1/health` (`protocol_version`); the extension carries a matching constant and does a soft version check on each session init (a mismatch logs a warning and is surfaced in the Options diagnostics, but never blocks).
 
 ### Review daemon ↔ external MCP client: MCP over stdio or SSE
 
@@ -210,7 +217,7 @@ To use the code daemon directly with no review-daemon involvement:
 
 | State | Lives in | Notes |
 |---|---|---|
-| LLM provider config + API key | Review daemon's config file (encrypted at rest) | User edits via daemon's config; extension does NOT see the key |
+| LLM provider config + API key | Review daemon's config file (encrypted at rest) | User edits via the daemon's config UI at `/config-ui`; extension does NOT see the key. If no key is saved, the daemon falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from its environment |
 | Bearer token for extension↔daemon | `~/.config/libre-cr/token` (mode 0600) | Generated on first daemon start |
 | Per-PR conversation history | Review daemon's SQLite DB | One row per turn, keyed by `(pr_url, turn_id)` |
 | Investigation verb definitions | Review daemon's source code (Rust) | Phase B: hardcoded. Plugin model deferred. |
@@ -225,7 +232,7 @@ To use the code daemon directly with no review-daemon involvement:
 - **Review daemon not running.** Extension cannot reach `localhost:<port>`. Shows a banner: "Review daemon not running. [Start daemon] [Configure]." The "Start daemon" button is best-effort (we cannot launch arbitrary binaries from a content script; user must run the install command or click a tray icon — see `08-distribution.md`).
 - **LLM provider rate-limited or down.** Review daemon's agent loop returns an error event to the WebSocket. Q&A panel shows the error with a retry button. Conversation state is preserved.
 - **Worktree fetch fails (network, auth).** Code daemon surfaces error to review daemon, which surfaces to extension. Q&A panel offers to retry or fall back to "read-only, current branch state" mode (uses whatever's checked out, even if not the PR ref).
-- **No local checkout for the PR's repo.** Code daemon prompts to clone (via review daemon → extension UI). User confirms; code daemon clones into its managed location. This flow is deliberately friction-bearing because cloning is not free.
+- **No local checkout for the PR's repo.** The review daemon derives the remote URL from the scraped slug (`https://github.com/<owner>/<repo>.git`) and, on a `discover_repo` miss, calls the code daemon's `clone_repo`, which clones into its managed cache (`<data_dir>/repos/…`, bounded by the eviction policy) before `prepare_worktree`. No consent prompt: the user opened the PR to review it. Private repos rely on the user's git credential helper. (Manual testing found the original prompt-to-clone flow was never built on the extension side.)
 
 ## Why This Shape
 

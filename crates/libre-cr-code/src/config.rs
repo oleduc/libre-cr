@@ -114,12 +114,18 @@ pub struct LoggingConfig {
 impl Config {
     /// Default config file path. Per `specs/08-distribution.md` § Configuration
     /// Layout, all wrapper-managed configs live under `~/.config/libre-cr/`.
+    ///
+    /// Resolved as `$XDG_CONFIG_HOME/libre-cr/code.toml` falling back to
+    /// `~/.config/libre-cr/code.toml` — deliberately NOT `dirs::config_dir()`,
+    /// which on macOS is `~/Library/Application Support` and silently diverges
+    /// from where the wrapper, docs, and review daemon put everything else.
     pub fn default_path() -> PathBuf {
-        if let Some(home) = dirs::config_dir() {
-            home.join("libre-cr").join("code.toml")
-        } else {
-            PathBuf::from("./code.toml")
-        }
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join("libre-cr").join("code.toml")
     }
 
     /// Legacy path used before the wrapper migrated configs into the shared
@@ -133,6 +139,16 @@ impl Config {
         }
     }
 
+    /// Pre-XDG-fix location on macOS (`dirs::config_dir()`-based `code.toml`).
+    /// Distinct from `legacy_path` (the even older `libre-cr-code/` namespace).
+    pub fn macos_legacy_path() -> PathBuf {
+        if let Some(base) = dirs::config_dir() {
+            base.join("libre-cr").join("code.toml")
+        } else {
+            PathBuf::from("./code.toml")
+        }
+    }
+
     /// Load from a path; return defaults if it doesn't exist.
     pub fn load_from(path: &std::path::Path) -> anyhow::Result<Self> {
         if !path.exists() {
@@ -143,11 +159,33 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Load from the default config path. If only the legacy
-    /// `~/.config/libre-cr-code/config.toml` exists, copy it into the new
-    /// location and load from there.
+    /// Load from the default config path, running one-time migrations from
+    /// (a) the macOS `Application Support` location the pre-XDG-fix builds
+    /// used, then (b) the older `~/.config/libre-cr-code/config.toml`
+    /// namespace.
     pub fn load() -> anyhow::Result<Self> {
         let new_path = Self::default_path();
+        let macos_legacy = Self::macos_legacy_path();
+        if macos_legacy != new_path && !new_path.exists() && macos_legacy.exists() {
+            if let Some(parent) = new_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::copy(&macos_legacy, &new_path) {
+                Ok(_) => tracing::info!(
+                    from = %macos_legacy.display(),
+                    to = %new_path.display(),
+                    "migrated code.toml from Application Support to ~/.config/libre-cr/"
+                ),
+                Err(e) => {
+                    tracing::warn!(
+                        from = %macos_legacy.display(),
+                        error = %e,
+                        "could not migrate Application Support code.toml; loading it in place"
+                    );
+                    return Self::load_from(&macos_legacy);
+                }
+            }
+        }
         let legacy_path = Self::legacy_path();
         if !new_path.exists() && legacy_path.exists() {
             if let Some(parent) = new_path.parent() {
@@ -227,5 +265,25 @@ default_max_matches = 50
             !s.contains("libre-cr-code"),
             "default_path must not use the old libre-cr-code namespace: {s}"
         );
+    }
+
+    #[test]
+    fn default_path_is_xdg_dot_config_not_application_support() {
+        // macOS regression: dirs::config_dir() resolves to
+        // `~/Library/Application Support`, which silently diverged from the
+        // `~/.config/libre-cr/` namespace everything else uses. Without
+        // XDG_CONFIG_HOME set, the path must go through `~/.config`.
+        let p = Config::default_path();
+        let s = p.to_string_lossy();
+        if std::env::var_os("XDG_CONFIG_HOME").is_none() {
+            assert!(
+                s.contains(".config"),
+                "default_path must live under ~/.config, got: {s}"
+            );
+            assert!(
+                !s.contains("Application Support"),
+                "default_path must not use Application Support: {s}"
+            );
+        }
     }
 }

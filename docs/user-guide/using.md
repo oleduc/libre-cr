@@ -43,10 +43,10 @@ Every answer carries a collapsed **thinking trace** — the sequence of tool cal
 While answering, the assistant may highlight diff lines, attach a small annotation, scroll the diff to a cited location, or surface a link — only ever as part of answering *your* question. The panel footer counts active effects:
 
 ```
-2 highlights · 1 annotation · [Clear all]
+2 highlights · 1 annotation · [Clear all effects]
 ```
 
-- **Clear all** removes every effect immediately.
+- **Clear all effects** removes every effect immediately.
 - Effects also auto-clear when you ask the next question or close the panel.
 - The **mute toggle** (🔊/🔇 in the title bar) disables presentation effects for this session only — answers still arrive as text. The setting persists per session.
 

@@ -24,7 +24,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "highlight_lines".into(),
-            description: "Highlight lines in the diff.".into(),
+            description: "Highlight a range of lines in the PR diff shown in the browser. Use this whenever the reviewer asks you to point out, show, mark or highlight code. ALWAYS pass `label` (the short heading of the part, ≤ 8 words — shown as a caption next to the code) AND `detail` (your explanation of that part, 1–3 plain sentences — shown in the reviewer's tour widget next to the highlight, so it must stand on its own without the chat). Line numbers are NEW-side (right/after) numbers of the PR head; for deleted lines use the OLD-side number. Works for any file in the PR diff (the browser scrolls the file into view if needed).".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -33,14 +33,15 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
                     "end_line": {"type":"integer"},
                     "color": {"type":"string",
                               "enum":["red","yellow","green","blue","purple"]},
-                    "label": {"type":"string"}
+                    "label": {"type":"string", "description": "Short heading for this part (≤ 8 words)."},
+                    "detail": {"type":"string", "description": "Your explanation of this part, 1–3 plain sentences, self-contained."}
                 },
-                "required": ["file","start_line","end_line"]
+                "required": ["file","start_line","end_line","label","detail"]
             }),
         },
         ToolSchema {
             name: "annotate_line".into(),
-            description: "Insert an inline annotation next to a diff line.".into(),
+            description: "Insert a short inline note under a diff line in the browser (severity-colored). Good for flagging a specific finding at its location.".into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties": {
@@ -56,7 +57,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "scroll_to".into(),
-            description: "Scroll the diff to a file (and optional line).".into(),
+            description: "Scroll the browser diff to a file, or to a NEW-side line number within it (flashing the row). Without a line it scrolls to the file header.".into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties": {
@@ -68,7 +69,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "open_link".into(),
-            description: "Open a URL.".into(),
+            description: "Open a link for the reviewer: an https URL, an http URL on 127.0.0.1, or a github.com-relative path (e.g. /owner/repo/pull/1/files). `target` defaults to \"tab\" (new browser tab); \"panel\" shows it inside the panel where the extension allows that. Not for local files.".into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties": {

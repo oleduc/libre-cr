@@ -129,7 +129,7 @@ impl SpawnedClient {
         self.health.lock().await.clone()
     }
 
-    async fn send(&self, method: &'static str, params: Value) -> Result<Value> {
+    async fn send(&self, method: &'static str, params: Value, deadline: Duration) -> Result<Value> {
         let (reply, rx) = oneshot::channel();
         let pending = PendingCall {
             method,
@@ -140,7 +140,7 @@ impl SpawnedClient {
             .send(pending)
             .await
             .map_err(|_| Error::CodeDaemonUnavailable)?;
-        match timeout(CALL_TIMEOUT, rx).await {
+        match timeout(deadline, rx).await {
             Ok(Ok(r)) => r,
             Ok(Err(_)) => Err(Error::CodeDaemonUnavailable),
             Err(_) => Err(Error::Internal("code daemon call timeout".into())),
@@ -155,11 +155,20 @@ impl CodeDaemonClient for SpawnedClient {
     }
 
     async fn call(&self, name: &str, input: Value) -> Result<Value> {
+        self.call_with_timeout(name, input, CALL_TIMEOUT).await
+    }
+
+    async fn call_with_timeout(
+        &self,
+        name: &str,
+        input: Value,
+        deadline: Duration,
+    ) -> Result<Value> {
         let params = serde_json::json!({
             "name": name,
             "arguments": input,
         });
-        let v = self.send("tools/call", params).await?;
+        let v = self.send("tools/call", params, deadline).await?;
         // Code daemon returns `{ content: [{type:"text", text: "<json>"}], isError }`.
         // Unwrap into the inner envelope for the agent loop.
         Ok(unwrap_mcp_content(v))

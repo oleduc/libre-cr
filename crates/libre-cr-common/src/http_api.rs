@@ -137,6 +137,33 @@ pub struct ExportResponse {
     pub structure: Option<GithubReviewStructure>,
 }
 
+/// A single model offered by a provider. Shared between the review daemon's
+/// provider layer and the HTTP wire contract (`POST /v1/provider/models`) so
+/// the two never drift.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// `POST /v1/provider/models`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelsResponse {
+    pub models: Vec<ModelInfo>,
+}
+
+/// `GET /v1/provider/detected`. Reports whether ambient API-key environment
+/// variables are present in the daemon's environment so the config UI can
+/// offer a one-click "use the detected key" option.
+///
+/// Env vars only (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DetectedCredentials {
+    pub anthropic: bool,
+    pub openai: bool,
+}
+
 /// One verb in `GET /v1/verbs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerbDescriptor {
@@ -184,6 +211,28 @@ mod tests {
         assert!(v.get("repo_local_path").is_some_and(|x| x.is_null()));
         assert!(v.get("head_sha").is_some_and(|x| x.is_null()));
         assert_eq!(v["pending_action"], "worktree_pending");
+    }
+
+    #[test]
+    fn model_info_omits_absent_display_name() {
+        let m = ModelInfo {
+            id: "gpt-4o".into(),
+            display_name: None,
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["id"], "gpt-4o");
+        assert!(v.get("display_name").is_none());
+    }
+
+    #[test]
+    fn detected_credentials_wire_shape() {
+        let d = DetectedCredentials {
+            anthropic: true,
+            openai: false,
+        };
+        let v = serde_json::to_value(d).unwrap();
+        assert_eq!(v["anthropic"], true);
+        assert_eq!(v["openai"], false);
     }
 
     #[test]
