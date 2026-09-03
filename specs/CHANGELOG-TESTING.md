@@ -233,6 +233,23 @@ beyond what either certification round reviewed.
   (pairing auth exception, origin-check claims dropped for diagnostics-only,
   MD040 fence). The stale config-migration comment was verified already fixed.
   *Trigger: PR #1 review comments.*
+- **CodeRabbit round two on PR #1.** Live `scroll_to` no longer moves the
+  viewport (recorded only; tour/replay scroll — closes the loophole in the
+  reviewer-initiated-scrolling rule); the `libre-cr-hide-labels` class is
+  cleared on manager teardown and creation so reopened panels show captions;
+  hash-decoded and clicked selections quote the *clicked side's* cell on
+  replacement rows (`textOfLines` gained a side preference); stale async hash
+  decodes are discarded by generation; the panel `max-height` accounts for its
+  80px top offset; `highlight_lines` marks `label`/`detail` required in the
+  schema, matching its description; `/v1/provider/models` counts only a
+  *string* `api_key` as explicit (null no longer skips key-clearing); history
+  replay budgets by messages, not turns (a turn is two messages); the ledger's
+  superseded replay entry says so. The new live-scroll regression test caught a
+  real bug beyond the review: `clear_presentation` *removed* flash-tagged
+  elements, and `scroll_to` tags GitHub's own row as flash — so clearing after
+  a scroll deleted the diff row from the page. Flash rows are now stripped like
+  highlights; only our inserted annotation rows are removed.
+  *Trigger: PR #1 review comments.*
 
 ---
 
@@ -394,7 +411,9 @@ remains deliberately unfixed. None of the open items block the demo path.
   streaming, so the reviewer only ever sees the end state — and testing
   presentation required a paid model call each time. The presentation manager
   now records each successful call as a step; the panel footer gets ◀ k/N ▶ and
-  Replay (clear, then re-apply steps 0..k). *Trigger: manual testing.*
+  Replay (clear, then re-apply steps 0..k). Initial implementation — the paced
+  replay was later superseded by the reviewer-driven guided tour (see "Guided
+  tour replaces timed replay" below). *Trigger: manual testing.*
 - **Highlights were hard to relate to the answer.** The `label` the model
   passes with `highlight_lines` was only a hover `title`. It is now a caption
   chip floating at the right end of the range's first code line (attribute-keyed

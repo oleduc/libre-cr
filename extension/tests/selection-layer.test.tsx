@@ -73,6 +73,8 @@ describe("SelectionLayer — symbol pick uses the clicked cell", () => {
     const sel = onSelect.mock.calls[0]![0]!;
     expect(sel.kind).toBe("symbol");
     expect((sel as { identifier: string }).identifier).toBe("new_name");
+    // The quoted text must come from the clicked (right) side too.
+    expect((sel as { text?: string }).text).toBe("new_name");
   });
 });
 

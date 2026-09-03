@@ -36,7 +36,7 @@ pub fn presentation_tool_schemas() -> Vec<ToolSchema> {
                     "label": {"type":"string", "description": "Short heading for this part (≤ 8 words)."},
                     "detail": {"type":"string", "description": "Your explanation of this part, 1–3 plain sentences, self-contained."}
                 },
-                "required": ["file","start_line","end_line"]
+                "required": ["file","start_line","end_line","label","detail"]
             }),
         },
         ToolSchema {

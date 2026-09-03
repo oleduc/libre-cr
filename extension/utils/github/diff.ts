@@ -163,11 +163,18 @@ export function textOfLines(
   start: number,
   end: number,
   root: ParentNode = globalThis.document,
+  side?: "left" | "right",
 ): string | undefined {
   const out: string[] = [];
   for (let l = start; l <= Math.min(end, start + 120); l++) {
     const row = findRow(file, l, root);
-    const cell = row?.querySelector<HTMLElement>(CODE_CELL_SEL);
+    // A React replacement row carries a left (deleted) and a right (added)
+    // code cell; without a side preference the first match wins and a
+    // right-side selection would quote deleted text.
+    const cell =
+      (side
+        ? row?.querySelector<HTMLElement>(`${CODE_CELL_SEL}[data-diff-side="${side}"]`)
+        : null) ?? row?.querySelector<HTMLElement>(CODE_CELL_SEL);
     if (!cell) continue;
     const clone = cell.cloneNode(true) as HTMLElement;
     clone.querySelectorAll(".libre-cr-label").forEach((c) => c.remove());

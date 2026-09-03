@@ -158,18 +158,20 @@ export function annotateLine(
 export function scrollTo(
   ctx: PresentationContext,
   input: { file: string; line?: number },
+  opts: { scroll?: boolean } = {},
 ): PresentationResult {
   if (!input?.file) return { ok: false, error: "validation_failed" };
+  const mayScroll = opts.scroll !== false;
   if (typeof input.line !== "number") {
     // No line: bring the file itself into view (line 1 is rarely in a hunk).
     const container = fileContainer(input.file, ctx.root);
     if (!container) return { ok: false, error: "file_not_in_view", message: `no diff rendered for ${input.file}` };
-    void scrollIntoViewSettled(container, "start");
+    if (mayScroll) void scrollIntoViewSettled(container, "start");
     return { ok: true, effect_id: ctx.nextEffectId() };
   }
   const row = findRow(input.file, input.line, ctx.root);
   if (!row) return { ok: false, error: "file_not_in_view", message: `no row ${input.file}:${input.line}` };
-  void scrollIntoViewSettled(row, "center");
+  if (mayScroll) void scrollIntoViewSettled(row, "center");
   const effectId = ctx.nextEffectId();
   row.classList.add("libre-cr-flash");
   row.setAttribute("data-libre-cr-effect-id", effectId);
@@ -225,10 +227,13 @@ export function clearPresentation(
   for (const tag of tagsToClear) {
     const els = ctx.root.querySelectorAll<HTMLElement>(`[data-libre-cr-tag="${tag}"]`);
     for (const el of Array.from(els)) {
-      if (tag === "annotation" || tag === "flash") {
+      if (tag === "annotation") {
+        // Annotation rows are elements *we* inserted — removal is correct.
         el.parentNode?.removeChild(el);
       } else {
-        // For highlights, only strip the markers/classes; leave the row.
+        // Highlight and flash tags sit on GitHub's own rows: only strip the
+        // markers/classes, never remove the row (a flash-tagged row used to
+        // be deleted here, taking the diff line with it).
         el.removeAttribute("data-libre-cr-effect-id");
         el.removeAttribute("data-libre-cr-tag");
         el.removeAttribute("data-libre-cr-color");
@@ -236,6 +241,7 @@ export function clearPresentation(
         el.querySelectorAll(".libre-cr-label").forEach((c) => c.remove());
         el.classList.remove(
           "libre-cr-effect",
+          "libre-cr-flash",
           ...Array.from(el.classList).filter((c) => c.startsWith("libre-cr-hl-")),
         );
       }
@@ -260,6 +266,7 @@ export async function dispatchPresentationCall(
   ctx: PresentationContext,
   tool: string,
   input: Record<string, unknown>,
+  opts: { scroll?: boolean } = {},
 ): Promise<PresentationResult> {
   // GitHub virtualizes the diff; give the target file a chance to mount first.
   if (
@@ -274,7 +281,7 @@ export async function dispatchPresentationCall(
     case "annotate_line":
       return annotateLine(ctx, input as Parameters<typeof annotateLine>[1]);
     case "scroll_to":
-      return scrollTo(ctx, input as Parameters<typeof scrollTo>[1]);
+      return scrollTo(ctx, input as Parameters<typeof scrollTo>[1], opts);
     case "open_link":
       return openLink(ctx, input as Parameters<typeof openLink>[1]);
     case "clear_presentation":

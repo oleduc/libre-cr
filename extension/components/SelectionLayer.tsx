@@ -35,6 +35,13 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
       if (!el.closest(`${NUM_CELL_SEL}, ${CODE_CELL_SEL}`)) return;
       const hit = hitTestLine(target);
       if (!hit) return;
+      // Which side of a split/replacement row the click landed on — text
+      // extraction must quote that side, not the row's first code cell.
+      const side =
+        (el.closest("[data-diff-side]")?.getAttribute("data-diff-side") as
+          | "left"
+          | "right"
+          | null) ?? undefined;
       // Cmd-click → symbol; shift-click → range start/end; plain click → line.
       if (ev.metaKey || ev.ctrlKey) {
         // Try to pick the identifier from the line text — from the *clicked*
@@ -67,7 +74,7 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
               line: hit.line,
               column: col,
               identifier: ident,
-              text: textOfLines(hit.file, hit.line, hit.line),
+              text: textOfLines(hit.file, hit.line, hit.line, document, side),
             });
             return;
           }
@@ -80,7 +87,7 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
         kind: "line",
         file: hit.file,
         line: hit.line,
-        text: textOfLines(hit.file, hit.line, hit.line),
+        text: textOfLines(hit.file, hit.line, hit.line, document, side),
       });
     };
     document.addEventListener("click", click, true);

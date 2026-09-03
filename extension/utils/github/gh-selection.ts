@@ -8,7 +8,7 @@
 import type { Selection } from "../selection";
 import { FILE_CONTAINER_SEL, filePathOf, textOfLines } from "./diff";
 
-const DIFF_HASH = /^#?diff-([0-9a-f]{64})[RL](\d+)(?:-[RL](\d+))?$/;
+const DIFF_HASH = /^#?diff-([0-9a-f]{64})([RL])(\d+)(?:-[RL](\d+))?$/;
 
 const digestCache = new Map<string, string>();
 
@@ -30,7 +30,10 @@ export async function selectionFromDiffHash(
 ): Promise<Selection | null> {
   const m = DIFF_HASH.exec(hash);
   if (!m) return null;
-  const [, digest, aRaw, bRaw] = m;
+  const [, digest, sideRaw, aRaw, bRaw] = m;
+  // Quote the side the reviewer selected: a replacement row renders a left
+  // (deleted) and a right (added) cell for the same coordinates.
+  const side = sideRaw === "L" ? ("left" as const) : ("right" as const);
   const files = new Set(
     Array.from(root.querySelectorAll<HTMLElement>(FILE_CONTAINER_SEL))
       .map((el) => filePathOf(el))
@@ -48,10 +51,10 @@ export async function selectionFromDiffHash(
         file,
         start_line: lo,
         end_line: hi,
-        text: textOfLines(file, lo, hi, root),
+        text: textOfLines(file, lo, hi, root, side),
       };
     }
-    return { kind: "line", file, line: a, text: textOfLines(file, a, a, root) };
+    return { kind: "line", file, line: a, text: textOfLines(file, a, a, root, side) };
   }
   return null;
 }
@@ -65,12 +68,16 @@ export function watchGithubLineSelection(
   win: Window = window,
 ): () => void {
   let last = "";
+  let generation = 0;
   const apply = () => {
     const hash = win.location.hash;
     if (hash === last) return;
     last = hash;
+    // The decode is async (SHA-256 digests); two quick selections can
+    // resolve out of order, and a stale result would restore the old one.
+    const g = ++generation;
     void selectionFromDiffHash(hash, win.document).then((sel) => {
-      if (sel) onSelect(sel);
+      if (sel && g === generation) onSelect(sel);
     });
   };
   const afterClick = () => {

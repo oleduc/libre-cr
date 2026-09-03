@@ -442,7 +442,10 @@ async fn build_history_messages(
     context_turn_ids: &[String],
 ) -> Result<Vec<Message>> {
     let history = store.list_turns(session_id).await?;
-    let take = max_history_messages.saturating_sub(1);
+    // Each replayed turn contributes two messages (user + assistant); budget
+    // by messages so the configured limit is what actually reaches the
+    // provider (minus one slot for the current question).
+    let take = max_history_messages.saturating_sub(1) / 2;
     let turns: Vec<&Turn> = history
         .iter()
         .filter(|t| matches!(t.kind, TurnKind::Question) && t.status == TurnStatus::Ok)

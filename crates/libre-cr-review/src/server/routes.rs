@@ -516,6 +516,7 @@ async fn provider_models(
     let explicit_key = body
         .get("provider")
         .and_then(|p| p.get("api_key"))
+        .and_then(|k| k.as_str())
         .is_some();
     if cfg.provider.endpoint != saved_endpoint && !explicit_key {
         cfg.provider.api_key_enc = String::new();

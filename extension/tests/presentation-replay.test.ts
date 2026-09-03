@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 
 import { createPresentationManager } from "../utils/presentation";
 import type { AskSession } from "../utils/daemon/ws";
@@ -91,5 +91,47 @@ describe("presentation replay", () => {
     expect(rows.length).toBe(1);
     expect(rows[0]!.querySelector("td.blob-num")!.getAttribute("data-line-number")).toBe("2");
     expect(m.steps[0]!.input.detail).toBe("first thing");
+  });
+});
+
+describe("label visibility teardown", () => {
+  beforeEach(() => {
+    document.body.innerHTML = FIXTURE;
+    document.documentElement.classList.remove("libre-cr-hide-labels");
+  });
+
+  it("detachAll removes the global hide-labels class", () => {
+    const m = createPresentationManager();
+    m.setLabelsVisible(false);
+    expect(document.documentElement.classList.contains("libre-cr-hide-labels")).toBe(true);
+    m.detachAll();
+    expect(document.documentElement.classList.contains("libre-cr-hide-labels")).toBe(false);
+  });
+
+  it("a fresh manager clears a class a dead one left behind", () => {
+    document.documentElement.classList.add("libre-cr-hide-labels");
+    createPresentationManager();
+    expect(document.documentElement.classList.contains("libre-cr-hide-labels")).toBe(false);
+  });
+});
+
+describe("scroll_to scrolling is reviewer-initiated", () => {
+  beforeEach(() => {
+    document.body.innerHTML = FIXTURE;
+  });
+
+  it("does not scroll on live dispatch, does scroll on showStep", async () => {
+    const row = document.querySelector('td[data-line-number="1"]')!.closest("tr")! as HTMLElement;
+    const spy = vi.fn();
+    (row as unknown as { scrollIntoView: () => void }).scrollIntoView = spy;
+    const m = createPresentationManager();
+    const { session, emit } = fakeSession();
+    m.attach(session);
+    emit({ tool: "scroll_to", call_id: "c1", input: { file: "src/a.ts", line: 1 } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(m.steps.length).toBe(1); // recorded…
+    expect(spy).not.toHaveBeenCalled(); // …but the viewport did not move
+    await m.showStep(0); // reviewer-initiated
+    expect(spy).toHaveBeenCalled();
   });
 });

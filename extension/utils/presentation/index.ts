@@ -62,6 +62,9 @@ export function createPresentationManager(
   options: PresentationManagerOptions = {},
 ): PresentationManager {
   const ctx = makeContext(options.context);
+  // A previous manager (panel closed, content script reloaded) may have left
+  // the global label-visibility class behind; a fresh manager starts visible.
+  ctx.root.documentElement.classList.remove("libre-cr-hide-labels");
   const onChange = new Set<(m: PresentationManager) => void>();
 
   const state = {
@@ -102,7 +105,9 @@ export function createPresentationManager(
     }
     let outcome: PresentationResult;
     try {
-      outcome = await dispatchPresentationCall(ctx, tool, input);
+      // Live dispatch: record the effect but never move the viewport — every
+      // scroll is reviewer-initiated (tour / replay pass the default).
+      outcome = await dispatchPresentationCall(ctx, tool, input, { scroll: false });
     } catch (e) {
       outcome = {
         ok: false,
@@ -190,6 +195,9 @@ export function createPresentationManager(
     detachAll() {
       for (const off of state.detachers) off();
       state.detachers.length = 0;
+      // Teardown must not leak the global class: the next manager starts
+      // with labelsVisible = true and chips would stay hidden otherwise.
+      ctx.root.documentElement.classList.remove("libre-cr-hide-labels");
     },
     setMuted(muted: boolean) {
       state.muted = muted;

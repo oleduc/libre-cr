@@ -76,13 +76,14 @@ export const PANEL_STYLES = `
   display: flex;
   flex-direction: column;
   font-size: 13px;
-  max-height: 80vh;
   overflow: hidden;
   resize: both;
   min-width: 300px;
   min-height: 220px;
   max-width: 92vw;
-  max-height: 92vh;
+  /* The default top offset is 80px; leave a bottom margin too so a panel
+     resized to its limit never clips its footer controls. */
+  max-height: calc(100vh - 96px);
 }
 .libre-cr-titlebar {
   background: #f6f8fa;
