@@ -10,6 +10,7 @@ use libre_cr_common::ws_frames::UsageTally;
 use libre_cr_common::Selection;
 use uuid::Uuid;
 
+use crate::config::Limits;
 use crate::error::{Error, Result};
 use crate::provider::{ContentBlock, Message, Provider, Role, StreamEvent};
 use crate::storage::{Severity, Store, ToolTrace, Turn, TurnKind, TurnStatus};
@@ -33,8 +34,9 @@ pub struct TurnContext {
     pub provider: Arc<dyn Provider>,
     pub router: ToolRouter,
     pub store: Store,
-    pub max_tool_turns: u32,
-    pub max_history_messages: u32,
+    /// Every tunable that shapes the turn, straight from `[limits]` in
+    /// review.toml (editable from the extension's options page).
+    pub limits: Limits,
     pub global_instructions: String,
 }
 
@@ -235,7 +237,7 @@ pub async fn run_turn(
         build_history_messages(
             &ctx.store,
             &ctx.session_id,
-            ctx.max_history_messages as usize,
+            &ctx.limits,
             &input.context_turn_ids,
         )
         .await?,
@@ -248,8 +250,11 @@ pub async fn run_turn(
     let mut answer = String::new();
     let mut usage = UsageTally::default();
     let mut tool_call_count = 0usize;
+    // Shared across every round of this turn: the per-result cap alone still
+    // permits `max_tool_turns` × that cap of tool output in one request.
+    let mut tool_chars_spent = 0usize;
 
-    for _ in 0..ctx.max_tool_turns {
+    for _ in 0..ctx.limits.max_tool_turns {
         let mut text_buf = String::new();
         let mut tool_uses: Vec<(String, String, serde_json::Value)> = Vec::new();
         let mut stream = ctx.provider.stream(&messages, &tools).await?;
@@ -319,10 +324,9 @@ pub async fn run_turn(
         messages.push(assistant);
 
         // I2: dispatch every tool call of this LLM turn concurrently.
-        // `tool_call` frames go out first (original order), each
-        // `tool_result` frame is emitted as its dispatch resolves, and the
-        // result blocks fed back to the model preserve the original call
-        // order (`join_all` returns outputs in input order).
+        // `tool_call` frames go out first (original order), and the result
+        // blocks fed back to the model preserve the original call order
+        // (`join_all` returns outputs in input order).
         for (id, name, input_json) in &tool_uses {
             sink.tool_call(id, name, input_json.clone()).await?;
         }
@@ -332,22 +336,29 @@ pub async fn run_turn(
                 name: name.clone(),
                 input: input_json.clone(),
             };
-            async move {
-                let outcome = ctx.router.dispatch(&call).await;
-                let sent = sink.tool_result(&call.id, outcome.value.clone()).await;
-                (outcome, sent)
-            }
+            async move { ctx.router.dispatch(&call).await }
         }))
         .await;
         let mut tool_result_blocks = Vec::new();
-        for ((id, name, input_json), (outcome, sent)) in tool_uses.into_iter().zip(outcomes) {
-            sent?;
+        for ((id, name, input_json), outcome) in tool_uses.into_iter().zip(outcomes) {
+            // Capping happens here, not in the concurrent dispatch above: the
+            // turn's budget is shared state, and the frame has to report the
+            // same size the model actually received.
+            let (content, truncated_from) = clip_tool_result(
+                &outcome.value.to_string(),
+                &ctx.limits,
+                &mut tool_chars_spent,
+            );
+            sink.tool_result(&id, outcome.value.clone(), truncated_from)
+                .await?;
             traces.push(ToolTrace {
                 trace_id: format!("tr_{}", Uuid::new_v4().simple()),
                 turn_id: turn_id.clone(),
                 ordinal: (traces.len() as i64) + 1,
                 tool_name: name,
                 input_json,
+                // The store keeps the whole result: the cap is about what the
+                // model can hold, not about what the export may show.
                 output_json: outcome.value.clone(),
                 duration_ms: outcome.duration_ms,
                 ok: outcome.ok,
@@ -355,7 +366,7 @@ pub async fn run_turn(
             tool_call_count += 1;
             tool_result_blocks.push(ContentBlock::ToolResult {
                 tool_use_id: id,
-                content: outcome.value.to_string(),
+                content,
                 is_error: !outcome.ok,
             });
         }
@@ -395,18 +406,46 @@ async fn persist(
     Ok(turn.turn_id)
 }
 
-/// How many of the most recent history turns are replayed with their full
-/// tool results: a follow-up question almost always targets the last answers,
-/// and without the evidence in context the model paraphrases from memory
-/// (the fabricated-identifier hallucination class).
-const REPLAY_FULL_TURNS: usize = 2;
-/// Per tool-result cap when replaying history (a `get_pr_diff` can be huge).
-const REPLAY_RESULT_MAX_CHARS: usize = 20_000;
-/// Total tool-result budget per replayed turn.
-const REPLAY_TURN_MAX_CHARS: usize = 40_000;
-/// Hard cap on how many turns replay at full fidelity per ask, however many
-/// the client expands; oldest are demoted to stubs first.
-const REPLAY_MAX_FULL_TURNS: usize = 5;
+/// Bound one live tool result: the per-result cap first, then whatever is left
+/// of the turn's shared budget. Returns what the model receives and, when
+/// shortened, the original char count for the panel.
+///
+/// Truncating rather than dropping the result or failing the turn is the whole
+/// point: the answer still goes through, and the note tells the model how to
+/// fetch the rest on its next call — which fixes the overflow instead of
+/// merely surviving it.
+fn clip_tool_result(serialized: &str, limits: &Limits, spent: &mut usize) -> (String, Option<u64>) {
+    let total = serialized.chars().count();
+    let remaining = limits.max_turn_tool_chars.saturating_sub(*spent);
+    let allowance = limits
+        .max_tool_result_chars
+        .min(remaining.max(TOOL_RESULT_FLOOR_CHARS));
+    if total <= allowance {
+        *spent += total;
+        return (serialized.to_string(), None);
+    }
+    let mut content: String = serialized.chars().take(allowance).collect();
+    *spent += allowance;
+    if remaining <= allowance {
+        content.push_str(&format!(
+            "\n…[truncated: {total} chars. This turn's tool-output budget ({} chars) is spent — \
+             answer from what you already have, or narrow your requests.]",
+            limits.max_turn_tool_chars
+        ));
+    } else {
+        content.push_str(&format!(
+            "\n…[truncated: {total} → {allowance} chars. Narrow the request to see more: `paths` \
+             on get_pr_diff, `start_line`/`end_line` on read_file.]"
+        ));
+    }
+    (content, Some(total as u64))
+}
+
+/// The smallest head of a tool result the model still receives once a turn's
+/// tool-output budget is spent. Not configurable: it exists so the loop can
+/// always make progress instead of handing the model nothing, and it bounds
+/// the overrun at `max_tool_turns` × this.
+const TOOL_RESULT_FLOOR_CHARS: usize = 2_000;
 
 fn clip(s: &str, max_chars: usize) -> (String, bool) {
     if s.chars().count() <= max_chars {
@@ -431,16 +470,17 @@ fn tool_stub(t: &ToolTrace) -> String {
 }
 
 /// History replay: every prior ok question turn contributes its Q/A prose;
-/// the last `REPLAY_FULL_TURNS` of them also carry their tool results
+/// the last `limits.replay_full_turns` of them also carry their tool results
 /// verbatim (capped), and older turns carry a one-line stub naming the tools
 /// used, so the model knows those outputs are gone and re-reads instead of
 /// citing from memory.
 async fn build_history_messages(
     store: &Store,
     session_id: &str,
-    max_history_messages: usize,
+    limits: &Limits,
     context_turn_ids: &[String],
 ) -> Result<Vec<Message>> {
+    let max_history_messages = limits.max_history_messages as usize;
     let history = store.list_turns(session_id).await?;
     // Each replayed turn contributes two messages (user + assistant); budget
     // by messages so the configured limit is what actually reaches the
@@ -452,16 +492,16 @@ async fn build_history_messages(
         .collect();
     let turns = &turns[turns.len().saturating_sub(take)..];
     // Full fidelity: the recency floor plus any turn the client expanded,
-    // capped at REPLAY_MAX_FULL_TURNS (oldest demoted first). Matching against
+    // capped at `replay_max_full_turns` (oldest demoted first). Matching against
     // this session's own turns is also what scopes client-sent ids: a foreign
     // turn_id matches nothing.
-    let full_from = turns.len().saturating_sub(REPLAY_FULL_TURNS);
+    let full_from = turns.len().saturating_sub(limits.replay_full_turns);
     let mut full: Vec<bool> = turns
         .iter()
         .enumerate()
         .map(|(i, t)| i >= full_from || context_turn_ids.iter().any(|id| id == &t.turn_id))
         .collect();
-    let mut remaining = REPLAY_MAX_FULL_TURNS;
+    let mut remaining = limits.replay_max_full_turns;
     for flag in full.iter_mut().rev() {
         if *flag {
             if remaining == 0 {
@@ -488,7 +528,7 @@ async fn build_history_messages(
                         "\n\n[Tool results gathered during this turn — reference \
                          material, not part of the shown answer:]",
                     );
-                    let mut budget = REPLAY_TURN_MAX_CHARS;
+                    let mut budget = limits.replay_turn_chars;
                     for tr in &traces {
                         let (input, _) = clip(&tr.input_json.to_string(), 300);
                         if budget == 0 {
@@ -498,7 +538,7 @@ async fn build_history_messages(
                             ));
                             continue;
                         }
-                        let cap = REPLAY_RESULT_MAX_CHARS.min(budget);
+                        let cap = limits.replay_result_chars.min(budget);
                         let (out, clipped) = clip(&tr.output_json.to_string(), cap);
                         budget = budget.saturating_sub(out.chars().count());
                         text.push_str(&format!(
@@ -530,6 +570,30 @@ async fn build_history_messages(
 }
 
 /// Persist a turn as `cancelled` (used by the WS handler on disconnect).
+/// Persist a turn as `error` (used by the WS handler when the turn failed).
+///
+/// Without this a failed turn left no trace at all: no log line and no row, so
+/// the only evidence was the error frame in the browser, and diagnosing one
+/// meant reconstructing it from stored sizes.
+pub async fn persist_failed(
+    ctx: &TurnContext,
+    input: &TurnInput,
+    partial_answer: String,
+) -> Result<()> {
+    let turn_id = format!("t_{}", Uuid::new_v4().simple());
+    persist(
+        ctx,
+        &turn_id,
+        input,
+        &partial_answer,
+        TurnStatus::Error,
+        &[],
+        UsageTally::default(),
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn persist_cancelled(
     ctx: &TurnContext,
     input: &TurnInput,
@@ -551,6 +615,152 @@ pub async fn persist_cancelled(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tool_result_under_the_cap_passes_through_whole() {
+        let limits = Limits::default();
+        let mut spent = 0usize;
+        let result = "{\"ok\":true}";
+        let (content, truncated) = clip_tool_result(result, &limits, &mut spent);
+        assert_eq!(content, result);
+        assert_eq!(truncated, None);
+        assert_eq!(spent, result.len(), "a small result still costs its budget");
+    }
+
+    #[test]
+    fn an_oversized_tool_result_is_truncated_and_says_how_to_narrow() {
+        // The shape that overflowed a 262k-token context: one `get_pr_diff`
+        // without `paths` measured 589,499 chars on a real PR.
+        let limits = Limits {
+            max_tool_result_chars: 100,
+            ..Limits::default()
+        };
+        let huge = "x".repeat(589_499);
+        let mut spent = 0usize;
+        let (content, truncated) = clip_tool_result(&huge, &limits, &mut spent);
+        assert_eq!(
+            truncated,
+            Some(589_499),
+            "the panel needs the original size"
+        );
+        assert!(content.starts_with(&"x".repeat(100)));
+        assert!(content.contains("truncated: 589499 → 100 chars"));
+        // The note has to be actionable, or the model just calls it again.
+        assert!(content.contains("`paths` on get_pr_diff"));
+        assert_eq!(spent, 100);
+    }
+
+    #[test]
+    fn a_spent_turn_budget_still_yields_a_readable_head() {
+        // Answers must go through: a turn that has used its whole budget gets
+        // the floor plus a note, never an empty result and never an error.
+        let limits = Limits {
+            max_tool_result_chars: 20_000,
+            max_turn_tool_chars: 1_000,
+            ..Limits::default()
+        };
+        let mut spent = limits.max_turn_tool_chars; // budget already gone
+        let huge = "y".repeat(50_000);
+        let (content, truncated) = clip_tool_result(&huge, &limits, &mut spent);
+        assert_eq!(truncated, Some(50_000));
+        assert!(
+            content.starts_with(&"y".repeat(TOOL_RESULT_FLOOR_CHARS)),
+            "the model still gets the floor"
+        );
+        assert!(content.contains("tool-output budget (1000 chars) is spent"));
+    }
+
+    #[test]
+    fn the_turn_budget_shrinks_the_allowance_across_rounds() {
+        let limits = Limits {
+            max_tool_result_chars: 10_000,
+            max_turn_tool_chars: 12_000,
+            ..Limits::default()
+        };
+        let mut spent = 0usize;
+        let big = "z".repeat(30_000);
+        let (first, _) = clip_tool_result(&big, &limits, &mut spent);
+        assert!(first.starts_with(&"z".repeat(10_000)));
+        assert_eq!(spent, 10_000);
+        // 2,000 chars of budget remain, so the next result is cut to that.
+        let (second, truncated) = clip_tool_result(&big, &limits, &mut spent);
+        assert_eq!(truncated, Some(30_000));
+        assert!(second.starts_with(&"z".repeat(2_000)));
+        assert!(!second.starts_with(&"z".repeat(2_001)));
+    }
+
+    #[tokio::test]
+    async fn history_replay_caps_come_from_config() {
+        let store = Store::open_in_memory().unwrap();
+        let sess = store
+            .upsert_session("https://github.com/a/b/pull/9", serde_json::json!({}))
+            .await
+            .unwrap();
+        let t = Turn {
+            turn_id: "t1".into(),
+            session_id: sess.session_id.clone(),
+            ordinal: 1,
+            kind: TurnKind::Question,
+            status: TurnStatus::Ok,
+            verb: None,
+            question: Some("q".into()),
+            selection: None,
+            answer: Some("a".into()),
+            user_content: None,
+            severity: None,
+            usage_in: 0,
+            usage_out: 0,
+            created_at: 1,
+            source_turn_id: None,
+        };
+        let tr = ToolTrace {
+            trace_id: "tr1".into(),
+            turn_id: "t1".into(),
+            ordinal: 1,
+            tool_name: "read_file".into(),
+            input_json: serde_json::json!({"file": "src/x.py"}),
+            output_json: serde_json::json!({"content": "A".repeat(5_000)}),
+            duration_ms: 1,
+            ok: true,
+        };
+        store.insert_turn(&t, &[tr]).await.unwrap();
+
+        let text = |msgs: Vec<Message>| -> String {
+            msgs.iter()
+                .flat_map(|m| m.content.iter())
+                .map(|b| match b {
+                    ContentBlock::Text { text } => text.clone(),
+                    _ => String::new(),
+                })
+                .collect()
+        };
+
+        // A tight per-result cap truncates the replayed evidence...
+        let tight = Limits {
+            replay_result_chars: 200,
+            ..Limits::default()
+        };
+        let clipped = text(
+            build_history_messages(&store, &sess.session_id, &tight, &[])
+                .await
+                .unwrap(),
+        );
+        assert!(clipped.contains("re-read to cite the rest"));
+
+        // ...and turning the recency floor off stubs it entirely.
+        let none = Limits {
+            replay_full_turns: 0,
+            replay_max_full_turns: 0,
+            ..Limits::default()
+        };
+        let stubbed = text(
+            build_history_messages(&store, &sess.session_id, &none, &[])
+                .await
+                .unwrap(),
+        );
+        assert!(stubbed.contains("re-read before citing"));
+        assert!(!stubbed.contains("AAAA"));
+    }
+
     #[tokio::test]
     async fn history_replays_recent_tool_results_and_stubs_older() {
         let store = Store::open_in_memory().unwrap();
@@ -589,7 +799,7 @@ mod tests {
             };
             store.insert_turn(&t, &[tr]).await.unwrap();
         }
-        let msgs = build_history_messages(&store, &sess.session_id, 30, &[])
+        let msgs = build_history_messages(&store, &sess.session_id, &Limits::default(), &[])
             .await
             .unwrap();
         let all: String = msgs
@@ -649,7 +859,7 @@ mod tests {
         }
         // Expanding turn t1 promotes it to full fidelity; a foreign id is a no-op.
         let ids = vec!["t1".to_string(), "t_other_session".to_string()];
-        let msgs = build_history_messages(&store, &sess.session_id, 30, &ids)
+        let msgs = build_history_messages(&store, &sess.session_id, &Limits::default(), &ids)
             .await
             .unwrap();
         let all: String = msgs
@@ -710,8 +920,10 @@ mod tests {
                 provider,
                 router,
                 store,
-                max_tool_turns: 5,
-                max_history_messages: 30,
+                limits: Limits {
+                    max_tool_turns: 5,
+                    ..Limits::default()
+                },
                 global_instructions: String::new(),
             },
             RecordingSink::new(),
@@ -908,8 +1120,10 @@ mod tests {
             provider: std::sync::Arc::new(MockProvider::new(script)),
             router,
             store,
-            max_tool_turns: 5,
-            max_history_messages: 30,
+            limits: Limits {
+                max_tool_turns: 5,
+                ..Limits::default()
+            },
             global_instructions: String::new(),
         };
         let sink = RecordingSink::new();

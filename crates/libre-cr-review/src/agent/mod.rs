@@ -3,5 +3,5 @@
 mod loop_;
 mod sink;
 
-pub use loop_::{persist_cancelled, run_turn, TurnContext, TurnInput, TurnResult};
+pub use loop_::{persist_cancelled, persist_failed, run_turn, TurnContext, TurnInput, TurnResult};
 pub use sink::{FrameSink, RecordingSink};

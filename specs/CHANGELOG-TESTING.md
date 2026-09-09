@@ -250,6 +250,67 @@ beyond what either certification round reviewed.
   a scroll deleted the diff row from the page. Flash rows are now stripped like
   highlights; only our inserted annotation rows are removed.
   *Trigger: PR #1 review comments.*
+- **A wide `highlight_lines` froze (and killed) the tab.** Asked to point at a
+  class, the model called `highlight_lines` with `start_line: 136,
+  end_line: 614` — a 479-line span. `highlightLines` looped every line calling
+  `findRow`, and `findRow` re-resolves the file container with a
+  document-wide `querySelectorAll` + `Array.from` + `filePathOf` map on every
+  call, so the range cost O(range × document) of synchronous DOM work plus 479
+  React-visible row mutations. **Fixed:** new `findRows(file, start, end)`
+  resolves the container once and scans it once (479 scans → 1), the span is
+  clamped to `MAX_HIGHLIGHT_LINES = 80` with the clamp reported back to the
+  model in the `presentation_result`, and the tool description now tells the
+  model to make several narrow highlights rather than one sweeping range.
+  *Trigger: manual testing on PR #474 — the tab crashed mid-walkthrough.
+  Specs: 09 § highlight_lines.*
+- **`libre-cr stop` stopped the wrong process; `start` called an orphan
+  healthy.** Both commands acted on `run/review.pid`, which the supervisor
+  fills with its *child's* PID (`supervisor.rs:190`). So `stop` SIGTERMed the
+  review daemon inside a live restart loop — the supervisor respawned it
+  ~250 ms later and the next `start` said "already running" — while a
+  SIGKILLed wrapper left an unsupervised daemon that `start` read as a healthy
+  install and refused to replace, even though it was holding the port.
+  **Fixed:** the supervisor now records itself in `run/supervisor.pid`, which
+  is what `stop` signals (its SIGTERM handler stops the child gracefully and
+  leaves the loop) and what `start`/`status` treat as "running". `stop` also
+  reaps a daemon that outlived its supervisor, and `start` clears an orphan
+  before binding; `status` reports the two separately and flags
+  "running unsupervised". Escalation (TERM → wait → KILL) is now one shared
+  `proc::terminate_and_wait`, and both commands take their pid-file paths as
+  arguments so the tests don't depend on the ambient `$HOME` the integration
+  suite re-points concurrently. Verified live: `stop` now leaves no process,
+  a closed port, and no pid files.
+  *Trigger: taking over daemon management during manual testing.
+  Specs: 08 § Wrapper CLI Surface, § Supervision Model.*
+- **A long conversation outgrew the model's context, and the failure left no
+  trace.** After 7 turns on one PR the session stopped answering. Diagnosed
+  from stored sizes, because nothing was logged: `kimi-k2.6` has a
+  262,144-token context, one `get_pr_diff` without `paths` had returned
+  **589,499 chars** (~168k tokens) in a single result, turn 1's cumulative
+  `usage_in` was **760,326** tokens across its rounds, and live tool results
+  were fed to the model completely uncapped (`loop_.rs` pushed
+  `outcome.value.to_string()` straight into the message array). The
+  history-replay feature added days earlier made it worse by design: it raised
+  the per-ask floor from ~9k tokens of prose to as much as ~57k of replayed
+  tool output. **Fixed:** every live tool result is capped
+  (`max_tool_result_chars`), a shared per-turn budget bounds all of them
+  together (`max_turn_tool_chars`), and the replay caps became config too.
+  Exceeding a cap never fails the turn — the result is truncated, the model is
+  told how to narrow its next call (`paths`, `start_line`/`end_line`), and a
+  floor guarantees it always receives a readable head so the loop can finish.
+  All eight caps are editable in the daemon's own config UI (`/config-ui`,
+  the page the popup's "Configure daemon" link and `libre-cr config` open) —
+  one form, one Save, sending a partial range-checked `limits` patch to
+  `POST /v1/config`. They are deliberately *not* in the extension's options
+  page: the daemon enforces them and must keep them without the extension, and
+  splitting config across two editors is the leak the spec already warned
+  about. The `tool_result` frame carries `truncated_from`, and the panel shows
+  a per-turn notice plus a per-trace marker so a shortened answer is never
+  silent. Separately, a failed turn now
+  logs at error level and persists an `error` row — previously it produced no
+  log line and no row, which is why this had to be reconstructed from
+  arithmetic. *Trigger: manual testing — "this long discussion is now
+  systematically crashing". Specs: 04 § Configuration, § Configuration UI.*
 
 ---
 
@@ -496,17 +557,13 @@ remains deliberately unfixed. None of the open items block the demo path.
 - **Reloading the unpacked extension wipes `storage.local` → re-pair.** Every
   dev reload of the extension forces a new pairing (and a new 5-minute code).
   Folds into the pairing-UX item above. *Trigger: manual testing.*
-- **BUG — `libre-cr stop` does not stop the supervisor.** `stop` SIGTERMs the PID
-  in the pid file, which is the *review daemon* child; the supervisor logs
-  `unclean-exit code=None` and respawns it 250 ms later (on a fresh ephemeral
-  port), and the next `start` reports "already running". `stop` must target the
-  supervisor, or the supervisor must treat a stop-requested TERM as intentional.
-  Related: the supervisor runs in the foreground, so the daemons live and die
+- **The supervisor still runs in the foreground**, so the daemons live and die
   with whatever launched them — during testing a launcher reaping its children
   after hours idle took the review daemon down twice (`graceful-stop`, no
   crash). A `libre-cr start --detach` (own session, `setsid`-style) or a
-  launchd/systemd unit at distribution time is the real fix.
-  *Trigger: manual testing — restart after a config edit; idle kills.*
+  launchd/systemd unit at distribution time is the real fix. (The `stop`
+  half of this item is fixed; see the findings log.)
+  *Trigger: manual testing — idle kills.*
 - **Pairing UX: one-time code + 5-minute TTL is a bad experience.** Manual
   testing: the code expired before the extension was loaded and the options
   form filled in (endpoint must also be re-typed — the form defaults to
@@ -525,8 +582,6 @@ remains deliberately unfixed. None of the open items block the demo path.
   3-layer surgery. No `PlatformRef` extracted yet. *(round-2 arch erosion #4.)*
 - **`worktree_path` cached on session rows has no invalidation** against future LRU
   eviction. *(round-2 arch failure-matrix.)*
-- **Wrapper SIGKILL** can leave a live unsupervised review daemon that `start` then
-  mislabels "already running". *(round-2 arch failure-matrix.)*
 - **`AnthropicProvider::validate()` is not a live one-shot call** — it only checks
   the token is non-empty. (`/v1/config/validate` therefore confirms construction
   + a present credential, not a successful round-trip.) *(carried from round-1

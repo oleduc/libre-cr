@@ -432,14 +432,32 @@ sse = true                     # /mcp on HTTP listener
 text = ""                      # prepended to system prompt every turn
 
 [limits]
-max_tool_turns = 25
-max_history_messages = 30
+max_tool_turns = 25            # tool rounds before the model must answer
+max_history_messages = 30      # two per earlier exchange (question + answer)
 session_idle_evict_days = 90
+# Context caps. Everything the model sees is bounded, so a long conversation
+# cannot outgrow the model's context window. Exceeding a cap never fails the
+# turn: the tool result is truncated, the model is told to narrow its next
+# request, and the `tool_result` frame carries `truncated_from` so the panel
+# can say it happened.
+max_tool_result_chars = 20000  # one live tool result
+max_turn_tool_chars = 120000   # all live tool output for one answer
+replay_full_turns = 2          # recent answers replayed with their evidence
+replay_max_full_turns = 5      # ceiling incl. turns the panel expanded
+replay_result_chars = 20000    # per replayed tool result
+replay_turn_chars = 40000      # per replayed answer
 ```
+
+Why these are tunable rather than constants: the right values depend on the
+model's context window, and the same PR can produce wildly different tool
+output. One `get_pr_diff` without `paths` measured 589,499 chars (~168k tokens)
+on a real PR — over half of a 262k-token context in a single tool result.
 
 ## Configuration UI
 
-The extension does **not** edit provider config or store the API key. Two reasons: (a) the LLM call happens in the daemon, so the key belongs there; (b) the extension's options page is a leaky abstraction across multiple PR-review surfaces.
+The extension does **not** edit daemon config — not the provider, not the API key, and not the `[limits]` caps. Two reasons: (a) the work happens in the daemon, so its settings belong there; (b) the extension's options page is a leaky abstraction across multiple PR-review surfaces, and splitting config across two editors is the same leak twice.
+
+That page edits the provider block **and** the `[limits]` context caps, in one form with one Save: it reads both from `GET /v1/config` and sends a `provider` and a `limits` patch to `POST /v1/config`. The `limits` patch is partial — unmentioned caps are left alone — and every value is range-checked, so a zero cap answers 400 with the reason rather than storing a config that hands the model empty tool results.
 
 The daemon serves a minimal config UI at `http://127.0.0.1:<port>/config-ui` — a self-contained static HTML page, no templating. It reads its bearer token from the `?token=` query parameter (the wrapper's `libre-cr config` and the extension popup both open the URL with the token already appended) and attaches it as `Authorization: Bearer` on the JSON calls it makes. The token only ever appears in the URL the user already trusts to launch the daemon; it is never baked into stored markup.
 

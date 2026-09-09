@@ -41,7 +41,14 @@ export interface UsageTally {
 export type ServerFrame =
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; call_id: string; name: string; input: unknown }
-  | { type: "tool_result"; call_id: string; result_preview: unknown }
+  | {
+      type: "tool_result";
+      call_id: string;
+      result_preview: unknown;
+      /** Original char count when the daemon shortened what it gave the
+       *  model to fit the context caps (absent when nothing was cut). */
+      truncated_from?: number;
+    }
   | {
       type: "presentation_call";
       call_id: string;

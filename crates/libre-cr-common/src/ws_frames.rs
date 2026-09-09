@@ -54,6 +54,11 @@ pub enum ServerFrame {
     ToolResult {
         call_id: String,
         result_preview: serde_json::Value,
+        /// Original size in chars when the result handed to the model was
+        /// truncated by the context caps; absent when it went through whole.
+        /// The panel surfaces this so a shortened answer is never silent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        truncated_from: Option<u64>,
     },
     PresentationCall {
         call_id: String,

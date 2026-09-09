@@ -430,6 +430,62 @@ fn apply_provider_patch(
     Ok(())
 }
 
+/// Apply the `limits` patch object from a `POST /v1/config` body.
+///
+/// Range-checked rather than taken on faith: a zero char cap would hand the
+/// model empty tool results, and zero tool turns would answer every question
+/// without reading anything. Absent and null fields are left alone, so the
+/// options page can send only what the user edited.
+fn apply_limits_patch(cfg: &mut crate::config::Config, body: &serde_json::Value) -> Result<()> {
+    let Some(patch) = body.get("limits") else {
+        return Ok(());
+    };
+    fn field(patch: &serde_json::Value, name: &str, min: u64, max: u64) -> Result<Option<u64>> {
+        match patch.get(name) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => {
+                let n = value.as_u64().ok_or_else(|| {
+                    Error::Validation(format!("limits.{name} must be a non-negative integer"))
+                })?;
+                if !(min..=max).contains(&n) {
+                    return Err(Error::Validation(format!(
+                        "limits.{name} must be between {min} and {max}"
+                    )));
+                }
+                Ok(Some(n))
+            }
+        }
+    }
+    if let Some(n) = field(patch, "max_tool_turns", 1, 100)? {
+        cfg.limits.max_tool_turns = n as u32;
+    }
+    if let Some(n) = field(patch, "max_history_messages", 1, 200)? {
+        cfg.limits.max_history_messages = n as u32;
+    }
+    if let Some(n) = field(patch, "session_idle_evict_days", 1, 3650)? {
+        cfg.limits.session_idle_evict_days = n as u32;
+    }
+    if let Some(n) = field(patch, "max_tool_result_chars", 1_000, 1_000_000)? {
+        cfg.limits.max_tool_result_chars = n as usize;
+    }
+    if let Some(n) = field(patch, "max_turn_tool_chars", 1_000, 4_000_000)? {
+        cfg.limits.max_turn_tool_chars = n as usize;
+    }
+    if let Some(n) = field(patch, "replay_full_turns", 0, 50)? {
+        cfg.limits.replay_full_turns = n as usize;
+    }
+    if let Some(n) = field(patch, "replay_max_full_turns", 0, 50)? {
+        cfg.limits.replay_max_full_turns = n as usize;
+    }
+    if let Some(n) = field(patch, "replay_result_chars", 0, 1_000_000)? {
+        cfg.limits.replay_result_chars = n as usize;
+    }
+    if let Some(n) = field(patch, "replay_turn_chars", 0, 4_000_000)? {
+        cfg.limits.replay_turn_chars = n as usize;
+    }
+    Ok(())
+}
+
 async fn post_config(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -443,6 +499,7 @@ async fn post_config(
     let mut cfg = state.config.0.lock().await;
     let mut candidate = cfg.clone();
     apply_provider_patch(&mut candidate, &body, &state.install_key)?;
+    apply_limits_patch(&mut candidate, &body)?;
     let new_provider = if provider_changed {
         Some(crate::provider::build_provider(
             &candidate,
@@ -708,7 +765,7 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
 </head>
 <body>
 <h1>Libre CR — Configuration</h1>
-<p class="lede">Edit the LLM provider settings used by this review daemon. Changes are written to <code>review.toml</code> immediately.</p>
+<p class="lede">Edit the LLM provider and context settings used by this review daemon. Changes are written to <code>review.toml</code> immediately.</p>
 
 <form id="cfgForm">
   <label for="kind">Provider</label>
@@ -749,6 +806,55 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   </div>
   <p id="detectedHint" class="hint" hidden></p>
 
+  <h2>Context limits</h2>
+  <p class="lede">Caps on what reaches the model, so a long conversation cannot outgrow its
+  context window. The right values depend on that window: one <code>get_pr_diff</code> without
+  <code>paths</code> measured 589,499 chars (~168k tokens) on a real PR — over half of a
+  262k-token context in a single tool result.</p>
+  <p class="lede">Going over a cap never loses the answer. The tool result is shortened, the
+  model is told to narrow its next request, and the review panel says it happened.</p>
+
+  <div class="row">
+    <div>
+      <label for="max_tool_result_chars">Max chars per tool result</label>
+      <input id="max_tool_result_chars" type="number" min="1000" />
+    </div>
+    <div>
+      <label for="max_turn_tool_chars">Max tool output per answer</label>
+      <input id="max_turn_tool_chars" type="number" min="1000" />
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label for="max_tool_turns">Max tool rounds per answer</label>
+      <input id="max_tool_turns" type="number" min="1" max="100" />
+    </div>
+    <div>
+      <label for="max_history_messages">Max history messages replayed</label>
+      <input id="max_history_messages" type="number" min="1" max="200" />
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label for="replay_full_turns">Recent answers replayed with evidence</label>
+      <input id="replay_full_turns" type="number" min="0" max="50" />
+    </div>
+    <div>
+      <label for="replay_max_full_turns">Max answers replayed with evidence</label>
+      <input id="replay_max_full_turns" type="number" min="0" max="50" />
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label for="replay_result_chars">Max chars per replayed tool result</label>
+      <input id="replay_result_chars" type="number" min="0" />
+    </div>
+    <div>
+      <label for="replay_turn_chars">Max replayed tool output per answer</label>
+      <input id="replay_turn_chars" type="number" min="0" />
+    </div>
+  </div>
+
   <button type="submit">Save</button>
   <div id="status" role="status" aria-live="polite"></div>
 </form>
@@ -785,6 +891,22 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     modelStatus.className = isErr ? "modelStatus err" : "modelStatus";
   }
   var ENV_VARS = { anthropic: "ANTHROPIC_API_KEY", openai_compat: "OPENAI_API_KEY" };
+  // Every `[limits]` cap the page edits. One list so load and save cannot
+  // drift apart, and adding a cap is one entry plus one input.
+  var LIMIT_KEYS = [
+    "max_tool_result_chars", "max_turn_tool_chars",
+    "max_tool_turns", "max_history_messages",
+    "replay_full_turns", "replay_max_full_turns",
+    "replay_result_chars", "replay_turn_chars",
+  ];
+  function limitsPatch() {
+    var out = {};
+    LIMIT_KEYS.forEach(function (k) {
+      var el = document.getElementById(k);
+      if (el && el.value !== "") out[k] = Number(el.value);
+    });
+    return out;
+  }
   // Show the "detected key" hint next to the API-key field when the selected
   // provider has an ambient credential in the daemon's environment.
   function updateDetectedHint() {
@@ -827,6 +949,11 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     document.getElementById("max_tokens").value = p.max_tokens || 4096;
     document.getElementById("temperature").value = p.temperature != null ? p.temperature : 0;
     endpointEl.value = p.endpoint || "";
+    var l = cfg.limits || {};
+    LIMIT_KEYS.forEach(function (k) {
+      var el = document.getElementById(k);
+      if (el && l[k] != null) el.value = l[k];
+    });
     updateDetectedHint();
     setStatus("Loaded current settings.", true);
   }).catch(function (e) {
@@ -883,13 +1010,19 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       max_tokens: Number(document.getElementById("max_tokens").value),
       temperature: Number(document.getElementById("temperature").value),
       endpoint: endpointEl.value,
-    }};
+    }, limits: limitsPatch() };
     apiKeyPatch(body.provider);
     fetch("/v1/config", {
       method: "POST", headers: headers, body: JSON.stringify(body),
     }).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
+      // A rejected cap answers 400 with the reason ("must be between …"), so
+      // read the body rather than reporting a bare status.
+      return r.json().catch(function () { return null; }).then(function (data) {
+        if (!r.ok) {
+          throw new Error((data && data.message) ? data.message : "HTTP " + r.status);
+        }
+        return data;
+      });
     }).then(function () {
       setStatus("Saved.", true);
       apiKeyEl.value = "";

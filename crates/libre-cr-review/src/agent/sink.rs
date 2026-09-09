@@ -28,10 +28,16 @@ pub trait FrameSink: Send + Sync {
         .await
     }
 
-    async fn tool_result(&self, call_id: &str, result_preview: serde_json::Value) -> Result<()> {
+    async fn tool_result(
+        &self,
+        call_id: &str,
+        result_preview: serde_json::Value,
+        truncated_from: Option<u64>,
+    ) -> Result<()> {
         self.send(ServerFrame::ToolResult {
             call_id: call_id.to_string(),
             result_preview,
+            truncated_from,
         })
         .await
     }
