@@ -10,20 +10,49 @@ use crate::{config, paths, proc};
 pub async fn run() -> Result<()> {
     println!("libre-cr {}", env!("CARGO_PKG_VERSION"));
 
-    // PID file
-    let pid_file = paths::pid_file();
-    match proc::read_pid_file(&pid_file)? {
+    // Supervisor and daemon are reported separately: a daemon with no live
+    // supervisor is an orphan holding the port, which used to read as a
+    // perfectly healthy "running".
+    let supervisor_pid_file = paths::supervisor_pid_file();
+    let review_pid_file = paths::pid_file();
+    let supervisor = proc::read_pid_file(&supervisor_pid_file)?;
+    let supervised = supervisor.map(proc::is_alive).unwrap_or(false);
+    match supervisor {
         Some(pid) if proc::is_alive(pid) => {
+            println!(
+                "  {} supervisor: running (PID {pid})",
+                Color::Green.paint("✓")
+            );
+        }
+        Some(pid) => {
+            println!(
+                "  {} supervisor: stale PID {pid} in {}",
+                Color::Yellow.paint("!"),
+                supervisor_pid_file.display()
+            );
+        }
+        None => {
+            println!("  {} supervisor: not running", Color::DarkGray.paint("·"));
+        }
+    }
+    match proc::read_pid_file(&review_pid_file)? {
+        Some(pid) if proc::is_alive(pid) && supervised => {
             println!(
                 "  {} review daemon: running (PID {pid})",
                 Color::Green.paint("✓")
+            );
+        }
+        Some(pid) if proc::is_alive(pid) => {
+            println!(
+                "  {} review daemon: running unsupervised (PID {pid}) — `libre-cr stop` clears it",
+                Color::Yellow.paint("!")
             );
         }
         Some(pid) => {
             println!(
                 "  {} review daemon: stale PID {pid} in {}",
                 Color::Yellow.paint("!"),
-                pid_file.display()
+                review_pid_file.display()
             );
         }
         None => {

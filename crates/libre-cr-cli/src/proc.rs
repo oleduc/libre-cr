@@ -5,6 +5,7 @@
 //! to open the process via the standard library's exit-code check.
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -105,6 +106,30 @@ pub fn send_kill(pid: u32) -> Result<()> {
 #[cfg(windows)]
 pub fn send_kill(_pid: u32) -> Result<()> {
     Ok(())
+}
+
+/// SIGTERM `pid`, wait up to `timeout` for it to go away, then SIGKILL.
+/// Returns whether the process is gone by the time we return.
+///
+/// Shared by `stop` and `start` so the escalation policy lives in one place:
+/// both need to end a process that may ignore a soft signal, and `start` has
+/// to be able to clear an orphan before it can bind the port itself.
+pub async fn terminate_and_wait(pid: u32, timeout: Duration) -> bool {
+    if !is_alive(pid) {
+        return true;
+    }
+    send_term(pid).ok();
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        if !is_alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    send_kill(pid).ok();
+    // Brief grace for the OS to reap before we report.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    !is_alive(pid)
 }
 
 #[cfg(test)]
