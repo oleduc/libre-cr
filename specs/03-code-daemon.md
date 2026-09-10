@@ -42,6 +42,10 @@ All file-reading tools take an optional `ref` argument. If omitted, they read fr
 
 - **`read_file`** `{ repo_path: string, file: string, ref?: string, start_line?: number, end_line?: number }` → `{ content, total_lines }`
   Returns file content, optionally sliced. `ref` lets the caller read any commit's version.
+  Every content line is prefixed with its 1-based number in a fixed five-column
+  format (`   38 | …`). This is a contract, not a convenience: an LLM reading an
+  unnumbered blob has to *count* to answer "what is line 38", and got it wrong in
+  the field. See `10-grounding-and-context.md` § Evidence on the wire.
 
 - **`list_dir`** `{ repo_path: string, dir: string, ref?: string, recursive?: bool, max_depth?: number }` → `{ entries: [{ name, kind: "file"|"dir", size? }] }`
 

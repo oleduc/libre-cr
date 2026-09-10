@@ -173,6 +173,37 @@ Behavior:
 - **Notes** look distinct from Q&A turns: gray background, no thinking trace, simple text.
 - **Verbs** are buttons. Clicking one immediately runs the verb against the current selection — no question text required. The result appears as a Q&A turn with the verb's name as the question.
 - **Question box** accepts text. Enter submits. Shift-Enter newlines. Each submission is a new WS connection (per `04-review-daemon.md`).
+- **Answers render as markdown.** Model output is markdown, and reading it raw
+  cost more than it saved. `marked` produces the HTML and an allowlist
+  sanitizer walks it before it reaches the DOM — model output must never reach
+  `innerHTML` unfiltered, so this is the one place `dangerouslySetInnerHTML` is
+  permitted, behind that sanitizer. Links are `http(s)`-only and open in a new
+  tab; fenced-code language classes survive, because copy needs them.
+- **Copying a rendered answer yields markdown.** The rendered tag set is
+  exactly the sanitizer's allowlist, so a small DOM→markdown serializer
+  round-trips the selected fragment on `copy`: emphasis, inline and fenced code
+  (with language), links, nested lists, tables, blockquotes, headings and
+  task boxes go to `text/plain`, with the HTML kept for rich-text targets. A
+  partial inline selection stays plain text. Pasting an answer into a review
+  comment was otherwise a flattened wall of text.
+- **Truncated evidence is announced.** When a `tool_result` frame carries
+  `truncated_from`, the trace line is marked (`⚠ truncated from 589,499 chars`)
+  and the turn shows a notice naming how many results were shortened and where
+  to raise the caps. A shortened answer that looks complete is worse than a
+  visible gap — see `10-grounding-and-context.md` § Reporting what was cut.
+- **Conversation restores.** The panel rebuilds prior turns from
+  `GET /v1/sessions/:id` on load — collapsed Q&As with their selection chips,
+  editable notes, and markers for cancelled or failed turns. A session with no
+  history starts *closed* behind the floating CR button; only history or an
+  error opens it unasked. Restored turns keep their daemon ids so a later
+  question can name them in `context_turn_ids`.
+- **Keystrokes stay in the panel.** GitHub binds single-key document-level
+  hotkeys (`t` focuses its file finder), so the panel stops propagation of key
+  events originating inside it. Typing a question must never drive the host
+  page.
+- **The panel is resizable and re-openable.** Native CSS `resize: both` with the
+  size persisted per PR alongside the drag position; closing leaves a floating
+  button that brings it back, rather than requiring a page reload.
 
 ## Diff Interaction Layer
 

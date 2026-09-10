@@ -187,6 +187,19 @@ beyond what either certification round reviewed.
   previous run's endpoint file instantly; the file is now removed before spawning
   so the banner reports the fresh port.
   *Trigger: same session — banner showed a dead port. Specs: 08 § First-Run Flow.*
+- **The model explained the wrong line.** Asked about line 38 (a constant
+  assignment), the answer described the lines *after* it and never mentioned the
+  one selected. Two causes, both about what the model was handed: the wire
+  carried only coordinates, so "line 38" meant nothing without counting, and
+  `read_file` returned an unnumbered blob to count in — which it did, wrong.
+  **Fixed:** every `Selection` variant carries an optional `text` field holding
+  the selected code (populated on cell clicks, Cmd/Ctrl-click symbol picks and
+  GitHub's own hash gestures, always from the clicked side), `build_user_message`
+  quotes it back fenced and capped at 2,000 chars, and `read_file` now prefixes
+  every line with its 1-based number (`   38 | …`). *Trigger: manual testing on
+  PR #459 — "the line I selected is for this constant but the agent is talking
+  about the lines after that". Specs: 10 § Evidence on the wire; 03 § File and
+  structural reads.*
 - **History replay carries recent tool results.** Replayed history was Q/A prose
   only, so a follow-up question lost the evidence its parent turn was grounded
   in and the model paraphrased from memory — in one traced turn it invented
@@ -315,6 +328,11 @@ beyond what either certification round reviewed.
 ---
 
 ## Findings log (certification flags and field bugs, in order found)
+
+> This log records *what changed and why*. The contract that resulted from the
+> grounding and context rounds is stated in `10-grounding-and-context.md`;
+> where a fix changed a documented behaviour, the entry names the spec section
+> it landed in.
 
 Every item the certification rounds or manual testing flagged, kept with its
 full diagnosis. Most were fixed in place and say so (**Fixed**, or describe the

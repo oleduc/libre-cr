@@ -112,4 +112,5 @@ These are explicit non-goals for this iteration:
 | `07-conversation-and-notes.md` | Persistence model, export flow |
 | `08-distribution.md` | Install, supervision, updates |
 | `09-presentation-tools.md` | LLM-dispatched browser actions (highlight, annotate, scroll, link) |
+| `10-grounding-and-context.md` | What evidence reaches the model, how much, and what is reported when it is cut |
 | `plan.md` | Phased implementation |

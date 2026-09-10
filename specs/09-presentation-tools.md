@@ -28,10 +28,14 @@ Five tools. Conservative on purpose — we add more after watching real use.
 ### `highlight_lines`
 
 ```
-highlight_lines(file, start_line, end_line, color?: enum, label?: string)
+highlight_lines(file, start_line, end_line, label, detail, color?: enum)
 ```
 
-Visually highlight a line or range in the diff. Same overlay technique as the POC. `color` defaults to a neutral blue; the agent can pick from `red`, `yellow`, `green`, `blue`, `purple` for cue value. `label` is a tooltip.
+Visually highlight a line or range in the diff. `color` defaults to a neutral blue; the agent can pick from `red`, `yellow`, `green`, `blue`, `purple` for cue value.
+
+`label` and `detail` are **required**, in the schema as well as in the description. `label` is the short heading of the part (≤ 8 words), rendered as a caption chip at the right end of the range's first code line; `detail` is one to three plain sentences explaining that part, shown beside the code in the tour widget. `detail` has to stand on its own, because the reviewer reads it away from the chat.
+
+**A span is capped at 80 lines.** Over that, the head of the range is highlighted and the model is told it was clamped, in the `presentation_result`. This is a safety belt, not the mechanism: the tool description tells the model to make several narrow highlights instead of one sweeping range, because a highlight is meant to mark *the lines an answer talks about*. Asked to mark "the DynamoDB layer", a model once requested a 479-line span; each line was resolved by its own document-wide DOM query, and the tab died. Resolution is now one scan per call regardless of span, and the cap bounds the row mutations.
 
 Use when: the agent's answer cites a specific range and the reviewer would benefit from seeing it.
 
@@ -134,6 +138,28 @@ User does one of:
 
 Reasonable defaults: auto-clear when the next question is asked, manual override available. Effects from notes (manually added by the user) are not cleared automatically — those are reviewer-curated.
 
+### Applying effects to a page we do not own
+
+Two properties of GitHub's diff make the naive implementation fail:
+
+- **Effects are keyed by attribute, not class.** GitHub's React re-renders diff
+  rows on hover and selection and rewrites `className`, which silently erased
+  highlights. Effects are therefore marked with `data-libre-cr-*` attributes —
+  unknown `data-*` survives React's reconciliation — and styled through
+  `adoptedStyleSheets` on attribute selectors, which is also immune to the
+  page's CSP.
+- **The diff is virtualized.** Files away from the viewport are placeholder
+  regions with no rows, so an effect targeting one finds nothing.
+  `ensureFileRendered` scrolls the placeholder (or clicks the file-tree link)
+  into view and waits for the table to mount, with a deadline, before the
+  effect is applied. A file that never mounts yields `file_not_in_view` rather
+  than a silent no-op.
+
+Clearing distinguishes what we inserted from what we merely marked: annotation
+rows are ours and are removed, while highlight and flash markers sit on
+GitHub's own rows and are only stripped. Removing a flash-tagged element once
+deleted the diff row with it.
+
 ## Extension Implementation
 
 Two roles in the extension:
@@ -217,6 +243,26 @@ These are *hints*, not enforcement. The LLM still decides. If a verb produces a 
 ```
 
 A footer that shows what's currently applied and offers a single Clear button.
+
+### The guided tour
+
+The model fires its highlights while the answer is still streaming, so the
+reviewer would otherwise only ever see the end state. Every successful
+presentation call is recorded as a *step*, and the panel offers a tour widget
+over them: Prev / Next, a step counter, the step's `label` and `detail` beside
+the code, and "Show all".
+
+**Scrolling only ever follows a reviewer action.** A live `scroll_to` is
+recorded but does not move the viewport; only stepping through the tour or
+replaying does. An answer that yanks the page around while the reviewer is
+still reading the previous sentence is worse than no navigation at all. The
+widget opens *armed* on the first presentation call of a turn — showing
+"Scroll to first highlight" and waiting for a click — and opens in normal mode
+when the reviewer opens it themselves from the panel.
+
+This replaced a timed replay that paced steps automatically. The pacing was
+never right: too fast to read, too slow to skim, and moving the page without
+being asked.
 
 ### Settings (extension options page)
 

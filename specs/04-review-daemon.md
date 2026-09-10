@@ -46,14 +46,16 @@ A **session** corresponds 1:1 with a PR (identified by `pr_url`). It holds the c
 - **`WS /v1/sessions/:id/ask`**
   WebSocket upgrade. The client opens it once per Q&A turn (not per session — a fresh socket per question keeps state simple and lets either side disconnect cleanly).
 
-  Client → server (first frame): `{ question: string, selection?: Selection, verb?: string, mute_presentations?: bool }`
+  Client → server (first frame): `{ question: string, selection?: Selection, verb?: string, mute_presentations?: bool, context_turn_ids?: string[] }`
+
+  A `Selection` carries the selected code's `text` alongside its coordinates, so the model never has to count lines to find what the reviewer pointed at. `context_turn_ids` names earlier turns of this session whose tool results should be replayed in full — the panel sends the ones the reviewer has left expanded. Ids that do not belong to the session are ignored. Both are specified in `10-grounding-and-context.md`.
 
   When `mute_presentations` is `true` the daemon does not register the presentation tools for that turn at all, so the model cannot emit `presentation_call` frames — the mute toggle genuinely suppresses presentations rather than relying on the extension to ignore them. The extension also gates locally as defense in depth: while muted it answers any stray `presentation_call` with `{ ok: false, error: "presentation_muted" }`.
 
   Server → client frames:
   ```
   { type: "tool_call",          name, input, call_id }
-  { type: "tool_result",        call_id, result_preview }
+  { type: "tool_result",        call_id, result_preview, truncated_from? }
   { type: "text_delta",         text }
   { type: "presentation_call",  call_id, tool, input }     ← needs client reply
   { type: "done",               turn_id, usage: { input_tokens, output_tokens } }
@@ -71,6 +73,8 @@ A **session** corresponds 1:1 with a PR (identified by `pr_url`). It holds the c
   `09-presentation-tools.md`.
 
   The `tool_call` / `tool_result` frames are visible to the UI so the panel can show a "thinking trace" the user can expand. This is intentional — reviewers want to know what the agent looked at before trusting the answer.
+
+  `truncated_from` is present only when a tool result was too large to hand the model whole; it carries the original size in characters so the panel can say so rather than presenting a shortened answer as complete. The turn always completes — see `10-grounding-and-context.md` § The context budget.
 
   Cancellation: the client closes the socket. The server aborts the in-flight LLM call and any pending tool dispatches, but persists the partial turn (with status `cancelled`) so it remains in conversation history.
 
@@ -190,6 +194,10 @@ We deliberately do **not** expose the lower-level tools (`grep`, `find_reference
 ```
 
 ## Agent Loop
+
+What the loop *hands the model* — the grounding rules in the system prompt, the evidence contracts (`Selection.text`, numbered reads, the three-dot PR diff), which tools are hidden from it, how prior turns are replayed, and the caps that bound all of it — is specified in `10-grounding-and-context.md`. Two field failures came out of that surface rather than out of the loop's control flow, so it is contracted separately.
+
+Two consequences are visible in the loop itself. Worktree-management tools (`clone_repo`, `discover_repo`, `scan_for_repos`, `prepare_worktree`, `list_worktrees`, `remove_worktree`) are never offered to the model and are refused if called; `get_pr_diff` is computed by the router as a three-dot `git_diff` against `origin/<base>...HEAD` rather than read from scraped page data.
 
 Pseudo-Rust for the core loop. The real implementation is ~300 lines including streaming + cancellation + error handling.
 

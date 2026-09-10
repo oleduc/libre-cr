@@ -119,6 +119,24 @@ Two layers of supervision because the user-facing process (`libre-cr-review`) ca
 
 `libre-cr start` runs the supervisor **in the foreground** — it does not daemonize itself. After printing the first-run summary it holds the terminal, supervising the review daemon and honoring `SIGTERM`/`SIGINT` for graceful shutdown. Turning it into a background service is the platform service manager's job: `brew services` (macOS), `systemd --user` (Linux), or Task Scheduler (Windows). Double-forking ourselves is fragile across platforms and intentionally avoided.
 
+**Two pid files, and only one of them is the install.** The supervisor records
+the review daemon's pid in `run/review.pid` — that pid changes on every
+restart. It records *itself* in `run/supervisor.pid`, and that is what "is
+libre-cr running?" means:
+
+- `libre-cr stop` signals the **supervisor**. Its own `SIGTERM` handler stops
+  the daemon gracefully and leaves the restart loop. Signalling the daemon
+  directly only makes the supervisor spawn a replacement ~250 ms later, on a
+  fresh port, after which `start` reports "already running".
+- `stop` then reaps a daemon that outlived its supervisor, and `start` clears
+  such an orphan before binding. A force-killed wrapper cannot stop its child,
+  so the daemon can survive holding the port — which `start` used to read as a
+  healthy install and refuse to replace.
+- `status` reports the two separately and flags `running unsupervised` when it
+  sees an orphan.
+
+Escalation is uniform: `SIGTERM`, wait, then `SIGKILL`.
+
 Logs go to `~/.local/state/libre-cr/log/`:
 - `libre-cr-review.log` (rolling, daily, 14 days retained)
 - `libre-cr-code.log` (same)
@@ -144,7 +162,28 @@ Logs go to `~/.local/state/libre-cr/log/`:
 ~/.local/state/libre-cr/log/    # Logs
 ```
 
+```text
+~/.local/state/libre-cr/run/
+├── supervisor.pid              # the `libre-cr start` process — the install
+└── review.pid                  # the supervised child (changes per restart)
+```
+
 These follow the XDG Base Directory spec on Linux/macOS and equivalent locations on Windows (`%APPDATA%`, `%LOCALAPPDATA%`).
+
+**On macOS the config path is `$XDG_CONFIG_HOME` → `~/.config`, deliberately
+not `dirs::config_dir()`.** That helper returns `~/Library/Application Support`
+on macOS, so the daemons silently ignored the `review.toml`/`code.toml` that
+the wrapper, the docs, and their own token and endpoint files all use — they
+served defaults instead, and every test missed it because the harness passes
+`--config` explicitly. A one-time migration copies a file stranded at the
+Application Support location, and falls back to loading it in place if the copy
+fails rather than defaulting over a readable config.
+
+Config sections parse partially: a `[provider]` block carrying only `kind` fills
+the rest from defaults instead of failing to parse. A hand-written minimal
+config is a supported starting point, and the new `[limits]` caps
+(`10-grounding-and-context.md`) reach existing installs this way without an
+edit.
 
 ## Updates
 
