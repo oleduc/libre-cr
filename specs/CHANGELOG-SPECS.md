@@ -8,11 +8,59 @@ changes to the **code** found by testing; this one records changes to the
 Range: `402652f..` on branch `specs-grounding-and-context`. The full text of
 any change is in git; the quotes below are trimmed to the claim.
 
+## When
+
+The reconciliation happened on **2026-09-10**, in four commits:
+
+| Commit | Time (local) | What landed |
+|---|---|---|
+| `697fb38` | 10:32 | `10-grounding-and-context.md` written; specs 01, 03, 04, 05, 08, 09 brought up to date for the testing rounds; the missing ledger entry added |
+| `a82c608` | 10:45 | The four audit findings in text written during those rounds |
+| `91f07a3` | 12:01 | The remaining 59 findings, under the agreed triage |
+| `8471536` | 15:51 | This record |
+
+The spec audit itself ran on 2026-09-10 between the first and third commits;
+its findings are what the third commit applies.
+
+**Granularity:** every row in the tables below landed in the commit named
+above for its disposition — the ~90 changes were not made incrementally over
+time, so a per-row date would be false precision. `git log -p` on the file is
+the authority for anything finer.
+
+### How long the drift had accumulated
+
+Every specification was written in a single design pass on **2026-06-23**,
+before any code existed. "Last touched" below counts only the in-place patches
+made during the August–September testing rounds; none of those was an audit.
+
+| Spec | First written | Last touched before | Days unreconciled |
+|---|---|---|---|
+| `01-overview.md` | 2026-06-23 | 2026-08-26 | 15 |
+| `02-architecture.md` | 2026-06-23 | 2026-09-01 | 9 |
+| `03-code-daemon.md` | 2026-06-23 | 2026-08-26 | 15 |
+| `04-review-daemon.md` | 2026-06-23 | 2026-09-01 | 9 |
+| `05-browser-extension.md` | 2026-06-23 | 2026-09-01 | 9 |
+| `06-investigation-verbs.md` | 2026-06-23 | 2026-06-23 | 79 |
+| `07-conversation-and-notes.md` | 2026-06-23 | 2026-06-23 | 79 |
+| `08-distribution.md` | 2026-06-23 | 2026-08-26 | 15 |
+| `09-presentation-tools.md` | 2026-06-23 | 2026-09-01 | 9 |
+
+Two documents — `06-investigation-verbs.md` and `07-conversation-and-notes.md`
+— had not been edited at all since the day they were written, 79 days earlier.
+They produced 7 and 5 findings respectively. The four touched most recently
+still produced findings, because those touches were feature patches, not
+checks: editing a document is not the same as verifying it.
+
+The code the specs now describe spans **2026-08-26 to 2026-09-10** — 39
+commits ahead of `main` across `post-certification-fixes`,
+`context-limits-and-lifecycle-fixes` and this branch.
+
 ## Why this reconciliation happened
 
-`specs/01`–`09` were written **before the code existed**. They are design
-documents, and they were read for two years as descriptions of a running
-system. Nobody had checked them against the implementation.
+`specs/01`–`09` were written **before the code existed**, on 2026-06-23 — the
+day of the repository's initial commit. They are design documents, and for the
+79 days since they were read as descriptions of a running system. Nobody had
+checked them against the implementation.
 
 An agent fact-checked all ten specs plus the testing ledger against `crates/`
 and `extension/`: **~515 claims checked, ~410 confirmed correct, 63 findings**
@@ -25,7 +73,8 @@ the expected fate of a design document: its predictions about things nobody
 built are the ones that rot. The parts that got built and stayed accurate
 stayed accurate because they were decisions that got honoured — the
 two-daemon split, MCP between them, the API key never reaching the extension,
-presentation tools as a secondary capability. Those held.
+presentation tools as a secondary capability. Those held for the whole 79 days,
+through 39 commits of implementation.
 
 So the defect was not bad design. It was reading a design document as a
 description, with nothing in the text to tell the two apart.
