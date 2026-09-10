@@ -29,7 +29,7 @@ pub fn internal_tool_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "get_pr_comments".into(),
-            description: "Existing review comments on this PR, each anchored to a file and line: `{ comments: [{ author, body, file, line, start_line?, side, resolved, thread_id, comment_id }], total, truncated }`. `resolved: true` means the thread was already dealt with — do not re-raise it as a live concern. Top-level conversation comments are not included, only comments on diff lines. `truncated: true` means some were dropped. An `unavailable` field means the comments could not be read at all — say so instead of reporting that the PR has none.".into(),
+            description: "Existing review comments on this PR: `{ comments: [{ author, body, anchor, file?, line?, start_line?, side?, resolved, thread_id, comment_id }], total, truncated }`. `anchor` says what the thread is attached to: `line` (file, line and side all present — read that location before judging the concern), `file` (a file-level comment: file only), or `none` (GitHub gives no anchor, typically a thread on a line that later commits rewrote; locate it from the body). `resolved: true` means the thread was already dealt with — do not re-raise it as a live concern. Top-level conversation comments are not included. `truncated: true` means some were dropped. An `unavailable` field means the comments could not be read at all — say so instead of reporting that the PR has none.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{}}),
         },
         ToolSchema {

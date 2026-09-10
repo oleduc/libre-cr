@@ -335,19 +335,33 @@ beyond what either certification round reviewed.
   code a concern points at and can tell a settled thread from a live one.
   Replies are flattened into rows sharing a `thread_id`.
 
-  The **DOM was the wrong source**: threads are virtualized, and on the
-  measured PR exactly **1 of 29** was mounted — a DOM scrape would have looked
-  like a PR with almost no discussion. The payload holds all of them and is
-  already inside the reviewer's authenticated session, which the daemon is not
-  (no GitHub token; OAuth posting is unbuilt). REST via a token remains the
-  better source if one ever exists — filed as v2, not built.
+  The **DOM was the wrong source**, for two reasons measured on live PRs.
+  Threads are virtualized: on our own PR exactly **1 of 29** was in the DOM.
+  And the changes UI renders only *unresolved* threads at all — a PR with 13
+  resolved reply threads had **none** in the DOM with the annotated file on
+  screen, and the one thread our PR did render was its one unresolved anchored
+  thread. The payload holds all of them and is already inside the reviewer's
+  authenticated session, which the daemon is not (no GitHub token; OAuth
+  posting is unbuilt). REST via a token remains the better source if one ever
+  exists — filed as v2, not built.
+
+  **A first cut of this dropped more than it kept.** It required a `file` and
+  `line` on every comment, reasoning that a concern the model cannot locate is
+  not usable evidence. Measuring the payload afterwards showed **17 of 29**
+  threads have no anchor in `markersMap` — GitHub only maps lines that survive
+  in the current diff — and one of those 17 was *unresolved*. So each comment
+  now carries an `anchor` of `line`, `file` (a file-level comment) or `none`,
+  and nothing is dropped for want of a location. The lesson is the same one
+  this ledger keeps recording: the assumption was reasonable, the measurement
+  disagreed, and only the measurement counts.
 
   Capture is bounded (100 comments, 1,200 chars per body) because `pr_data` is
   stored in the session row and re-sent on every init; `truncated` reports our
   cap *or* GitHub's own `threadsPageInfo.hasNextPage`. When the payload cannot
   be parsed the field is omitted and the tool answers `unavailable: true` —
   "unknown", never "none", which is the failure the old behaviour had.
-  Measured on PR #1: 86 files, 29 threads, 27 resolved, bodies 1.4k–3.6k chars.
+  Measured on PR #1: 86 files, 29 threads (12 anchored, 17 not), 27 resolved,
+  bodies 1.4k–3.6k chars.
   *Trigger: found while designing review-comment selection; fixed in its own PR
   first. Specs: 04 § Internal Tools; 05 § Review-comment selection.*
 

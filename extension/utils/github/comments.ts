@@ -32,13 +32,23 @@ export interface ScrapedComment {
   comment_id: number;
   author: string;
   body: string;
-  file: string;
+  /**
+   * What the thread is attached to:
+   * - `line` — a diff line, so `file`, `line` and `side` are all present;
+   * - `file` — the whole file (GitHub's file-level review comments): `file`
+   *   only;
+   * - `none` — the payload gives no anchor at all. Measured at 17 of 29
+   *   threads on one PR, one of them unresolved, so these are not droppable:
+   *   the body is still the concern, the model just has to locate it.
+   */
+  anchor: "line" | "file" | "none";
+  file?: string;
   /** The thread's last annotated line. */
-  line: number;
+  line?: number;
   /** Present when the thread annotates a range. */
   start_line?: number;
   /** `right` = the new/added side, `left` = the old/removed side. */
-  side: "left" | "right";
+  side?: "left" | "right";
   /** A resolved thread's concern was already dealt with — the model needs to
    *  know, or it re-raises settled points. */
   resolved: boolean;
@@ -48,7 +58,7 @@ export interface ScrapedComment {
 
 export interface ScrapedComments {
   comments: ScrapedComment[];
-  /** Threads found in the payload, before any cap. */
+  /** Comments found in the payload, before any cap. */
   total: number;
   /** True when this list is a subset — our caps, or GitHub's own pagination. */
   truncated: boolean;
@@ -73,9 +83,18 @@ function clip(body: string): string {
   return `${body.slice(0, MAX_BODY_CHARS)}…[truncated: ${body.length} chars]`;
 }
 
-/** Anchors by thread id, built from every file's `markersMap`. */
+type Anchor = Pick<ScrapedComment, "anchor" | "file" | "line" | "start_line" | "side">;
+
+/**
+ * Anchors by thread id, built from every file's `markersMap`.
+ *
+ * Keys are `R188` / `L42` (side + line) or the literal `FILE` for a
+ * file-level comment. Thread ids arrive as numbers here and as object keys in
+ * `markers.threads`, so they are compared as strings — a `Set` of the raw
+ * values silently matches nothing.
+ */
 function anchorsByThread(route: Record<string, unknown>) {
-  const out = new Map<string, { file: string; line: number; start_line?: number; side: "left" | "right" }>();
+  const out = new Map<string, Anchor>();
   const summaries = Array.isArray(route.diffSummaries) ? route.diffSummaries : [];
   for (const summary of summaries as Record<string, unknown>[]) {
     const file = typeof summary?.path === "string" ? summary.path : null;
@@ -84,11 +103,17 @@ function anchorsByThread(route: Record<string, unknown>) {
     for (const [key, entry] of Object.entries(map as Record<string, unknown>)) {
       const end = decodeAnchor(key);
       const threads = (entry as Record<string, unknown>)?.threads;
-      if (!end || !Array.isArray(threads)) continue;
+      if (!Array.isArray(threads)) continue;
       for (const t of threads as Record<string, unknown>[]) {
         if (t?.id === undefined || t?.id === null) continue;
+        if (!end) {
+          // `FILE`, or a key shape we do not know: the file is still known.
+          out.set(String(t.id), { anchor: "file", file });
+          continue;
+        }
         const start = typeof t.start === "string" ? decodeAnchor(t.start) : null;
         out.set(String(t.id), {
+          anchor: "line",
           file,
           line: end.line,
           side: end.side,
@@ -129,13 +154,13 @@ export function extractComments(payloadJson: string | null | undefined): Scraped
 
   for (const [threadId, thread] of Object.entries(threads as Record<string, unknown>)) {
     const t = thread as Record<string, unknown>;
-    const anchor = anchors.get(threadId);
-    // A thread with no anchor is not useful to the model: it could not read
-    // the code the concern is about. Counted, but not emitted.
+    // A thread with no anchor is still emitted: `markersMap` covers only the
+    // lines that survive in the current diff, and an unresolved concern on a
+    // line since rewritten is exactly the kind of thing worth asking about.
+    const anchor: Anchor = anchors.get(threadId) ?? { anchor: "none" };
     const comments = (t?.commentsData as Record<string, unknown> | undefined)?.comments;
     if (!Array.isArray(comments)) continue;
     total += comments.length;
-    if (!anchor) continue;
     for (const c of comments as Record<string, unknown>[]) {
       if (out.length >= MAX_COMMENTS) break;
       const author = (c?.author as Record<string, unknown> | undefined)?.login;
@@ -146,10 +171,7 @@ export function extractComments(payloadJson: string | null | undefined): Scraped
         comment_id: typeof c.databaseId === "number" ? c.databaseId : 0,
         author: typeof author === "string" ? author : "unknown",
         body: clip(body),
-        file: anchor.file,
-        line: anchor.line,
-        ...(anchor.start_line !== undefined ? { start_line: anchor.start_line } : {}),
-        side: anchor.side,
+        ...anchor,
         resolved: t?.isResolved === true,
         ...(typeof t?.resolvedBy === "string" ? { resolved_by: t.resolvedBy } : {}),
         ...(typeof c?.createdAt === "string" ? { created_at: c.createdAt } : {}),

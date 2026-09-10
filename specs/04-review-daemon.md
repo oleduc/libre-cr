@@ -308,18 +308,30 @@ The presentation-tool category is only registered for turns that have an active 
 - **`get_pr_diff`** `{ paths?: string[] }` → `{ files: [{ path, status, hunks }] }`
   Computed by the router as a three-dot `git_diff` (`merge_base: true`) against `origin/<base>...HEAD` on the session's worktree; the scraped payload is only the fallback when no worktree or base branch is known. No `additions` / `deletions` counts. `paths` narrows it, and narrowing matters — see `10-grounding-and-context.md` § The context budget.
 
-- **`get_pr_comments`** `{}` → `{ comments: [{ thread_id, comment_id, author, body, file, line, start_line?, side, resolved, resolved_by?, created_at? }], total, truncated }`
-  Existing **review** comments — the threads annotating diff lines. Top-level
-  conversation comments are not included. Every comment carries its thread's
-  anchor (`file`/`line`/`side`, plus `start_line` for a range) so the model can
-  go read the code the concern points at, and its thread's `resolved` state so
-  it does not re-raise a settled point. Replies are flattened: one row per
+- **`get_pr_comments`** `{}` → `{ comments: [{ thread_id, comment_id, author, body, anchor, file?, line?, start_line?, side?, resolved, resolved_by?, created_at? }], total, truncated }`
+  Existing **review** comments — the threads on the diff. Top-level
+  conversation comments are not included. Replies are flattened: one row per
   comment, sharing `thread_id`. `comment_id` is `databaseId`, the same id the
-  REST API uses.
+  REST API uses. Each comment carries its thread's `resolved` state so the
+  model does not re-raise a settled point.
 
-  Captured by the extension from the page's embedded JSON payload, not the DOM:
-  comment threads are virtualized (one thread mounted of 29 on the measured
-  PR), so a DOM scrape would report almost nothing. Bounded at capture — 100
+  `anchor` says what the thread is attached to, and which of the location
+  fields are therefore present:
+
+  | `anchor` | Fields | What it is |
+  |---|---|---|
+  | `line` | `file`, `line`, `side`, `start_line?` | A diff line. The model can read that location and judge the concern against it. |
+  | `file` | `file` | A file-level review comment (`markersMap` key `FILE`). |
+  | `none` | — | GitHub's payload gives no anchor. Typically a thread on a line later commits rewrote. |
+
+  `anchor: "none"` is common, not exceptional — 17 of 29 threads on the
+  measured PR, one of them unresolved. Such a thread is still a real concern,
+  so it is reported rather than dropped; the model locates it from the body.
+
+  Captured by the extension from the page's embedded JSON payload, not the DOM.
+  The DOM shows only *unresolved* threads whose file is rendered — on one PR
+  with 13 resolved reply threads, zero were in the DOM with the annotated file
+  on screen — so a DOM scrape reports almost nothing. Bounded at capture — 100
   comments, 1,200 chars per body — and `truncated` is true when that bit, or
   GitHub's own thread pagination, dropped anything.
 

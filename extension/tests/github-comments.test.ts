@@ -63,6 +63,7 @@ describe("extractComments", () => {
     const a = out.comments.filter((c) => c.thread_id === "A");
     expect(a.map((c) => c.comment_id)).toEqual([111, 112]);
     expect(a[0]).toMatchObject({
+      anchor: "line",
       author: "reviewer",
       file: "src/auth.ts",
       line: 188,
@@ -83,11 +84,28 @@ describe("extractComments", () => {
     expect(b.resolved).toBe(false);
   });
 
-  it("drops unanchored threads but counts them as truncation", () => {
+  it("keeps unanchored threads, marked as such", () => {
     const out = extractComments(payload())!;
-    expect(out.comments.some((c) => c.thread_id === "C")).toBe(false);
+    const c = out.comments.find((x) => x.thread_id === "C")!;
+    // Measured: 17 of 29 threads on a real PR had no anchor, one of them
+    // unresolved. Dropping them would hide live concerns.
+    expect(c).toMatchObject({ anchor: "none", body: "Orphan." });
+    expect(c.file).toBeUndefined();
+    expect(c.line).toBeUndefined();
     expect(out.total).toBe(4);
-    expect(out.truncated).toBe(true);
+    expect(out.truncated).toBe(false);
+  });
+
+  it("keeps file-level threads with the file but no line", () => {
+    const raw = JSON.parse(payload());
+    raw.payload.pullRequestsChangesRoute.diffSummaries[0].markersMap = {
+      FILE: { threads: [{ id: "A" }] },
+    };
+    const out = extractComments(JSON.stringify(raw))!;
+    const a = out.comments.find((c) => c.thread_id === "A")!;
+    expect(a).toMatchObject({ anchor: "file", file: "src/auth.ts" });
+    expect(a.line).toBeUndefined();
+    expect(a.side).toBeUndefined();
   });
 
   it("reports truncation when GitHub itself paginated the threads", () => {
