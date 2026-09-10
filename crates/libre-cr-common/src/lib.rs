@@ -16,5 +16,5 @@ pub mod version;
 pub mod ws_frames;
 
 pub use error::{ErrorCategory, ErrorEnvelope};
-pub use selection::Selection;
+pub use selection::{Selection, Side, ThreadComment};
 pub use version::PROTOCOL_VERSION;

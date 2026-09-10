@@ -207,6 +207,7 @@ pub fn validate_selection(verb_id: &str, selection: Option<&Selection>) -> Resul
                 Some(Selection::Line { .. }) => "a line selection".to_string(),
                 Some(Selection::Range { .. }) => "a range selection".to_string(),
                 Some(Selection::Symbol { .. }) => "a symbol selection".to_string(),
+                Some(Selection::Comment { .. }) => "a review-comment selection".to_string(),
             }
         )));
     }

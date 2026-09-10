@@ -187,6 +187,7 @@ fn format_anchor(sel: &libre_cr_common::Selection) -> String {
             identifier,
             ..
         } => format!("{file}:{line} ({identifier})"),
+        Comment { file, line, .. } => format!("{file}:{line} (review comment)"),
     }
 }
 
@@ -197,7 +198,7 @@ fn anchor_path_line(sel: &libre_cr_common::Selection) -> (String, Option<u32>) {
         Range {
             file, start_line, ..
         } => (file.clone(), Some(*start_line)),
-        Symbol { file, line, .. } => (file.clone(), Some(*line)),
+        Symbol { file, line, .. } | Comment { file, line, .. } => (file.clone(), Some(*line)),
     }
 }
 

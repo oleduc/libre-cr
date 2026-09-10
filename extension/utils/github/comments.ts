@@ -24,6 +24,9 @@
 // same encoding for its first line. That is the identical R/L convention the
 // diff URL hash uses (see `gh-selection.ts`).
 
+import type { Selection } from "../selection";
+import { FILE_CONTAINER_SEL, filePathOf } from "./diff";
+
 /** One review comment, flattened with its thread's anchor. */
 export interface ScrapedComment {
   /** GitHub's thread id; comments in one thread share it. */
@@ -183,5 +186,76 @@ export function extractComments(payloadJson: string | null | undefined): Scraped
     comments: out,
     total,
     truncated: out.length < total || pageInfo?.hasNextPage === true,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Selection: reading the one thread the reviewer is pointing at.
+//
+// This half reads the DOM, unlike the payload parse above, and deliberately:
+// selection needs the element under the cursor, which is by definition
+// mounted. Virtualization only breaks the *whole-PR* list.
+
+/** Verified against a live PR (2026-09-10). CSS-module class names in this UI
+ *  (`ReviewThread-module__…`) are build-hashed — never selectors. */
+export const THREAD_SEL = '[data-testid="review-thread"]';
+const COMMENT_ID = /^r(\d+)$/;
+/** Same cap the other selection variants use for captured text. */
+const MAX_SELECTION_BODY_CHARS = 4_000;
+
+function authorOf(el: Element): string {
+  const href =
+    el.querySelector('[data-testid="avatar-link"]')?.getAttribute("href") ??
+    el.querySelector('a[href^="/"]')?.getAttribute("href") ??
+    "";
+  const login = href.replace(/^\//, "").split(/[/?#]/)[0];
+  return login || "unknown";
+}
+
+function bodyOf(el: Element): string {
+  const text = (el.querySelector(".markdown-body")?.textContent ?? "").trim();
+  return text.length > MAX_SELECTION_BODY_CHARS
+    ? `${text.slice(0, MAX_SELECTION_BODY_CHARS)}…`
+    : text;
+}
+
+/**
+ * Turn a hovered review thread into a `Selection`.
+ *
+ * Returns `null` unless the thread yields both an anchor (file, line, side)
+ * and at least one comment body — a selection missing either would send the
+ * model a concern it cannot locate, or a location with no concern.
+ */
+export function selectionFromThread(thread: Element): Selection | null {
+  const container = thread.closest(FILE_CONTAINER_SEL);
+  const file = container ? filePathOf(container) : null;
+  // The thread's *own* row carries the annotated line. An earlier design read
+  // the preceding code row and was off by one against the REST API.
+  const cell = thread.closest("tr")?.querySelector("td[data-line-number][data-diff-side]");
+  const line = Number(cell?.getAttribute("data-line-number"));
+  const side = cell?.getAttribute("data-diff-side") === "left" ? "left" : "right";
+  if (!file || !Number.isFinite(line) || line <= 0) return null;
+
+  // One element per comment, `id="r<databaseId>"`. If that shape ever changes,
+  // fall back to the bodies alone rather than losing the thread entirely.
+  const roots = Array.from(thread.querySelectorAll<HTMLElement>('[id^="r"]')).filter((el) =>
+    COMMENT_ID.test(el.id),
+  );
+  const comments = roots.length
+    ? roots.map((el) => ({ author: authorOf(el), body: bodyOf(el) }))
+    : Array.from(thread.querySelectorAll<HTMLElement>(".markdown-body")).map((el) => ({
+        author: authorOf(thread),
+        body: bodyOf(el.parentElement ?? el),
+      }));
+  const kept = comments.filter((c) => c.body.length > 0);
+  if (!kept.length) return null;
+
+  return {
+    kind: "comment",
+    comment_id: COMMENT_ID.exec(roots[0]?.id ?? "")?.[1] ?? "",
+    file,
+    line,
+    side,
+    comments: kept,
   };
 }

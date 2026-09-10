@@ -321,7 +321,8 @@ both contradicted a draft of this design:
 
 Recorded as unobserved, to be checked during implementation: a thread with
 replies, and a resolved thread. The live specimen had exactly one comment and
-was unresolved, so the reply and resolved paths are designed, not seen.
+was unresolved, so the reply and resolved paths are designed, not seen. Both
+were checked before the code landed — see the entry below.
 
 Also flagged, not fixed *at the time*: `get_pr_comments` reads
 `pr_data.comments`, which the extension has never populated — the tool has
@@ -355,6 +356,36 @@ than the design:
 `side` and the R/L anchor encoding were confirmed here against a second
 specimen — the payload's `markersMap` key (`"R188"`) uses the same convention
 the selection design read off the DOM.
+
+## 2026-09-10 — Review-comment selection built; the unobserved cases checked
+
+The design above, implemented. Its `Status: specified, not built` marker is
+gone, and the two cases it flagged as designed-but-unseen were checked on live
+PRs picked for having them — the point of flagging them.
+
+| Spec | Old | New | |
+|---|---|---|---|
+| `05-browser-extension.md` § Review-comment selection | `Status: specified, not built`; "Two things are designed but unobserved … a thread with replies … a resolved thread" | `Status: built`, plus § What the live check changed: what each case turned out to be | Corrected |
+| `05-browser-extension.md` § Review-comment selection | (silent on file-level comments) | A file-level comment yields no anchor and so no selection; the affordance hides rather than offering a dead control | New |
+| `10-grounding-and-context.md` § A review comment arrives with its anchor | "*Specified, not built*" | How the thread is quoted (`@author: body`), and that only unresolved threads are selectable | Corrected |
+
+What the check actually changed:
+
+- **Replies: the design was right.** Two comments, two `id="r<databaseId>"`
+  roots oldest-first, one body and one avatar link each, and the thread's own
+  `tr` carrying the line and side that match the payload's `R360`.
+- **Resolved threads: the design was wrong to expect them.** They are not in
+  the DOM — the changes UI renders unresolved threads only. So nothing
+  selectable is ever resolved, and `Selection` needs no `resolved` field. The
+  spec had assumed a resolved thread was a selectable thread in a different
+  visual state.
+- **File-level comments were missed entirely** by the design, and by the first
+  cut of `get_pr_comments` alongside it.
+
+This is the first entry here written the way the record is supposed to work: a
+spec written before the code, checked against reality *before* the code landed,
+with the two things it admitted not knowing resolved rather than quietly
+inherited. One of the two turned out to be wrong.
 
 ## What this record does not cover
 
