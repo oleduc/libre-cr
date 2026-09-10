@@ -40,7 +40,7 @@
 │                                            │  Code daemon       │◄──── external MCP
 │                                            │  (libre-cr-code)   │     clients
 │                                            │                    │     (standalone use)
-│                                            │  • find_symbol     │ │
+│                                            │  • list_symbols    │ │
 │                                            │  • find_references │ │
 │                                            │  • grep            │ │
 │                                            │  • git_log/blame   │ │
@@ -118,7 +118,7 @@ If a tool needs a `pr_id`, it belongs in the review daemon. If a tool needs only
 ```
 1. User opens PR in browser
    ─→ Extension scrapes PR context (owner/repo/number/diff/comments)
-   ─→ Extension POSTs to review daemon: /sessions/<pr-id>/init
+   ─→ Extension POSTs to review daemon: POST /v1/sessions
    ─→ Review daemon:
         • Looks up or creates a session row in SQLite
         • Calls code daemon: discover_repo(remote_url)
@@ -126,7 +126,7 @@ If a tool needs a `pr_id`, it belongs in the review daemon. If a tool needs only
         • Returns session info to extension (worktree ready)
 
 2. User selects code in diff, clicks a verb or types a question
-   ─→ Extension opens WebSocket: /sessions/<pr-id>/ask
+   ─→ Extension opens WebSocket: /v1/sessions/<session-id>/ask
    ─→ Sends: { question, selection, verb? }
    ─→ Review daemon:
         • Loads conversation history for this session
@@ -154,7 +154,7 @@ If a tool needs a `pr_id`, it belongs in the review daemon. If a tool needs only
    ─→ Conversation accumulates per-PR
 
 4. When user is done reviewing:
-   ─→ Extension calls /sessions/<pr-id>/export
+   ─→ Extension calls POST /v1/sessions/<session-id>/export
    ─→ Review daemon returns a Markdown draft assembled from the conversation
    ─→ Extension copies to clipboard / opens GitHub review composer for the user to paste
 ```
@@ -190,7 +190,7 @@ To use the code daemon directly with no review-daemon involvement:
   - **Daemon → extension:** `text_delta`, `tool_call`, `tool_result`, `presentation_call`, `done`, `error`.
   - **Extension → daemon:** initial `{question, selection, verb}` frame, then `presentation_result` frames in response to each `presentation_call`.
 - See `04-review-daemon.md` for the HTTP API surface and `09-presentation-tools.md` for the presentation frame protocol.
-- The daemon also serves a self-contained configuration web page at `GET /config-ui` (static HTML, token passed via `?token=`) and supporting JSON routes the page consumes: `POST /v1/provider/models` (fetch a candidate provider's live model list) and `GET /v1/provider/detected` (report which ambient env-var keys are available). This page is opened by the wrapper's `libre-cr config` and by the extension popup's "Configure daemon" link, not embedded in the extension. CORS is dynamic: the allowlist is read on every request from the live extension-origin value, so an origin learned during pairing takes effect without a daemon restart.
+- The daemon also serves a self-contained configuration web page at `GET /config-ui` (static HTML, token passed via `?token=`) and supporting JSON routes the page consumes: `POST /v1/provider/models` (fetch a candidate provider's live model list) and `GET /v1/provider/detected` (report which ambient env-var keys are available). This page is opened by the wrapper's `libre-cr config` and by the extension popup's "Configure daemon" link, not embedded in the extension. CORS is wildcard (`*`) and there is no allowlist: the bearer token is the request boundary, and the origin recorded at pairing is kept for diagnostics only (see the Security bullets above).
 
 ### Review daemon ↔ code daemon: MCP over stdio
 
@@ -219,16 +219,16 @@ The shared crate also defines `PROTOCOL_VERSION` (currently `1`). The daemon rep
 |---|---|---|
 | LLM provider config + API key | Review daemon's config file (encrypted at rest) | User edits via the daemon's config UI at `/config-ui`; extension does NOT see the key. If no key is saved, the daemon falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from its environment |
 | Bearer token for extension↔daemon | `~/.config/libre-cr/token` (mode 0600) | Generated on first daemon start |
-| Per-PR conversation history | Review daemon's SQLite DB | One row per turn, keyed by `(pr_url, turn_id)` |
+| Per-PR conversation history | Review daemon's SQLite DB | One row per turn, keyed by `turn_id`, with a `session_id` foreign key and `UNIQUE (session_id, ordinal)`; `pr_url` lives on `sessions` |
 | Investigation verb definitions | Review daemon's source code (Rust) | Phase B: hardcoded. Plugin model deferred. |
 | Repo registry (remote URL → local path) | Code daemon's SQLite DB | Populated by repo scans + manual config |
-| PR worktrees | Code daemon's managed dir: `~/.local/share/libre-cr-code/worktrees/<owner>/<repo>/pr-<n>` | LRU eviction at configurable threshold |
+| PR worktrees | Code daemon's managed dir: `~/.local/share/libre-cr-code/worktrees/<sanitized-repo_id>/<sanitized-ref>` — e.g. `…/github.com_owner_repo/refs_pull_123_head` | LRU eviction at configurable threshold |
 | User notes (added manually in Q&A panel) | Review daemon's SQLite DB, alongside conversation | Treated as just-another-turn for export purposes |
-| Browser extension state | `browser.storage.local` | Only the daemon URL and the bearer token; everything else lives server-side |
+| Browser extension state | `browser.storage.local` | The daemon URL and bearer token, plus local UI state: theme override, per-PR panel geometry, per-session presentation mute, last daemon error/success, protocol-mismatch notice, dismissed diff-change banners, onboarding flag. Conversation state lives server-side. See `05-browser-extension.md` |
 
 ## Failure Modes And How They Surface
 
-- **Code daemon not running.** Review daemon detects this on every tool call, restarts the child process up to N times, then surfaces an error to the extension ("Code intelligence unavailable — restart the daemon"). User-facing.
+- **Code daemon not running.** Review daemon detects this on every tool call, restarts the child process up to N times, then surfaces the tool error to the extension, which renders it inline in the turn. (The wording is not fixed; there is no canned string for this.)
 - **Review daemon not running.** Extension cannot reach `localhost:<port>`. Shows a banner: "Review daemon not running. [Start daemon] [Configure]." The "Start daemon" button is best-effort (we cannot launch arbitrary binaries from a content script; user must run the install command or click a tray icon — see `08-distribution.md`).
 - **LLM provider rate-limited or down.** Review daemon's agent loop returns an error event to the WebSocket. Q&A panel shows the error with a retry button. Conversation state is preserved.
 - **Worktree fetch fails (network, auth).** Code daemon surfaces error to review daemon, which surfaces to extension. Q&A panel offers to retry or fall back to "read-only, current branch state" mode (uses whatever's checked out, even if not the PR ref).

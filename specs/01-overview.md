@@ -8,7 +8,7 @@ The system has three components:
 
 1. **Browser extension** — injects selection UI and a Q&A panel into GitHub PR pages.
 2. **Review daemon** (`libre-cr-review`) — runs the agent loop, manages per-PR conversation state, orchestrates code-intelligence tools, hosts the LLM provider client.
-3. **Code daemon** (`libre-cr-code`) — a standalone Rust MCP server for repo-aware code intelligence (symbol search, structural queries, git operations, worktree management). Usable on its own from any MCP client.
+3. **Code daemon** (`libre-cr-code`) — a standalone Rust MCP server for repo-aware code intelligence (text search, git operations, worktree management; symbol and structural queries are specified but not yet built). Usable on its own from any MCP client.
 
 ## Why a New Iteration
 
@@ -67,7 +67,7 @@ The verbs are not magic. They are well-tuned prompts that drive the same agent l
 | Daemon ↔ extension transport | Localhost HTTP + WebSocket + token | Simple, debuggable, supports streaming |
 | Daemon ↔ daemon protocol | MCP (stdio) | Standard, lets external clients reach the code daemon too |
 | Conversation storage | SQLite (in review daemon) | Local, durable, queryable |
-| Code intelligence (phase B) | ast-grep + ripgrep + tree-sitter + gitoxide | Native Rust, fast, no external runtime |
+| Code intelligence (phase B) | ripgrep + gitoxide + git CLI; ast-grep and tree-sitter *planned, not built* | Native Rust, fast, no external runtime |
 | Code intelligence (phase C) | + LSP client (`async-lsp` / `lsp-types`) | Semantic accuracy for cross-file references |
 | LLM providers | Anthropic + OpenAI-compatible (incl. Ollama) | Carries forward the POC's provider model |
 
@@ -83,7 +83,7 @@ Credential resolution for `anthropic` / `openai_compat`: a key saved through the
 
 ## Phased Plan At A Glance
 
-- **Phase B (v2):** Browser extension + review daemon + code daemon, no LSP. The code daemon uses ast-grep, ripgrep, tree-sitter, and gitoxide. Investigation verbs ship as defined here. Conversation state persisted. Review export as a clipboard-pasteable draft.
+- **Phase B (v2):** Browser extension + review daemon + code daemon, no LSP. The code daemon uses ripgrep and gitoxide today; the ast-grep and tree-sitter layer that backs the AST tools is specified but not built (see `03-code-daemon.md` § Symbols). Investigation verbs ship as defined here. Conversation state persisted. Review export as a clipboard-pasteable draft.
 - **Phase C (v2.5):** LSP support added to the code daemon. Tool implementations gain LSP-backed alternatives. No new MCP surface — same tools, better answers when an LSP is configured. Architectural seams for this are designed into phase B.
 - **Later:** Optional GitHub OAuth for posting reviews directly. GitLab / Bitbucket adapters. IDE-side MCP clients beyond what external MCP-compatible tools already provide.
 

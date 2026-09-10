@@ -33,7 +33,9 @@ These elements ported as-is or with minor edits:
 
 ## Tech Stack
 
-Same as POC: WXT + React + TypeScript. Manifest V3. Tailwind in Shadow DOM via WXT's CSS injection mode. Anthropic SDK (and friends) are gone; what remains is HTTP + WebSocket + JSON.
+Same as POC: WXT + React + TypeScript. Manifest V3. Anthropic SDK (and friends) are gone; what remains is HTTP + WebSocket + JSON.
+
+Styling is a hand-written CSS string injected into the panel's shadow root, plus a separate page-level sheet for diff effects installed via `adoptedStyleSheets` (CSSOM insertion survives GitHub's `style-src` CSP). There is no Tailwind and no CSS framework: the panel is a few hundred lines of CSS, and the effect styles must key on `data-*` attributes rather than classes anyway (see `09-presentation-tools.md`).
 
 ## Manifest Surface
 
@@ -41,19 +43,19 @@ Same as POC: WXT + React + TypeScript. Manifest V3. Tailwind in Shadow DOM via W
 {
   "manifest_version": 3,
   "permissions": ["storage"],
-  "host_permissions": ["*://github.com/*"],
+  "host_permissions": ["*://github.com/*", "http://127.0.0.1/*", "http://localhost/*"],
   "content_scripts": [{
     "matches": ["*://github.com/*/pull/*", "*://github.com/*/pull/*/files*"],
     "js": ["content-script.js"],
     "run_at": "document_idle"
   }],
   "background": { "service_worker": "background.js" },
-  "options_page": "options.html",
+  "options_ui": { "page": "options.html", "open_in_tab": true },
   "action": { "default_popup": "popup.html" }
 }
 ```
 
-`host_permissions` does not include `127.0.0.1` — we'll use `fetch` from the content script's origin, which has `connect-src` semantics. The daemon's CORS handling allows the extension origin explicitly. If we hit issues we can add `connect-src` via `host_permissions` or move daemon calls to the background script (where `host_permissions` apply).
+`host_permissions` **does** include loopback, and daemon calls **are** relayed through the background service worker. Both were forced by the same discovery: a content script's `fetch` carries the *page's* origin and the page's CSP, and github.com's `connect-src` excludes `127.0.0.1`, so direct calls never left the browser. See § Transport from a Content Script, and `CHANGELOG-TESTING.md` for the diagnosis.
 
 ## Transport from a Content Script
 
@@ -129,7 +131,7 @@ type Selection =
 
 - **Line:** click on a diff line number gutter.
 - **Range:** shift-click extends; multi-line drag selection.
-- **Symbol:** hover-over-or-Cmd-click on an identifier. The extension's tree-sitter-lite layer (a minimal TS port for picking the identifier under the cursor) identifies the token; the daemon's `find_definition` resolves it.
+- **Symbol:** Cmd/Ctrl-click on an identifier. `pickIdentifier` is a regex over the clicked line's text, with the column derived from the mouse offset across the cell — there is no tree-sitter layer in the extension, minimal or otherwise. The daemon's `find_definition` would resolve it, but that tool is a stub (see `03-code-daemon.md` § Symbols), so a symbol selection is currently only an anchor for the question.
 
 The selection is sticky — it persists until cleared or replaced. The Q&A panel header shows the current selection ("`src/auth.ts:42-48` selected · [×]"). Asking a question without a selection is allowed (it's just "ask about this PR").
 
@@ -209,9 +211,15 @@ Behavior:
 
 The diff itself isn't owned by us, but we layer a few things on top:
 
-- **Line highlights.** When a question's answer references specific lines, the panel can offer "show on diff" — clicking scrolls the diff to the file/line and applies a temporary highlight. Same DOM injection technique the POC used; namespaced by `data-libre-cr-*` attributes for cleanup.
-- **Reference popovers.** When the agent uses `find_references` and surfaces line numbers in its answer, we render the line numbers as clickable links that scroll-to + highlight.
-- **Selection gutter affordance.** Hovering a diff line number reveals a small "Ask" button in the gutter that opens the panel with the line preselected.
+> **Status:** only the last item is built. The `SelectionLayer` installs a
+> single capture `click` listener and renders nothing — there is no hover
+> affordance, no popover, and no "show on diff" control. Selection instead
+> rides GitHub's own gestures (see § Selection Model). The three unbuilt
+> items stay here as intended behaviour.
+
+- **Line highlights.** *Not built.* When a question's answer references specific lines, the panel would offer "show on diff" — clicking scrolls the diff to the file/line and applies a temporary highlight. (The underlying mechanism exists and is used by presentation tools; what is missing is the panel-side affordance.)
+- **Reference popovers.** *Not built,* and blocked on `find_references`, which is a stub (`03-code-daemon.md` § Symbols).
+- **Selection gutter affordance.** *Not built.* Hovering a diff line number would reveal a small "Ask" button in the gutter.
 - **Presentation-tool effects.** During a turn, the LLM may issue `presentation_call` frames over the WS (highlight a line, annotate, scroll, open a link). The extension executes them via the same DOM injection layer. See `09-presentation-tools.md`.
 
 We deliberately do **not** auto-annotate the diff. Annotations come only from user actions (clicking a reference), explicit `add_note` calls (visible in the panel, not the diff), or presentation-tool calls produced by the LLM *in response to* a user question — never preemptively.
@@ -253,12 +261,16 @@ Settings (options page) for presentation behavior:
 | Key | Value | Notes |
 |---|---|---|
 | `daemon.endpoint` | `http://127.0.0.1:<port>` | Resolved during pairing |
-| `daemon.token` | bearer string | Stored encrypted with the extension's own obfuscation; the daemon's authoritative copy is on disk |
+| `daemon.token` | bearer string | **Plaintext** in `browser.storage.local`; the daemon's authoritative copy is on disk. Not obfuscated or encrypted, and not planned to be: `storage.local` is already origin-isolated to the extension, anything with code execution in that context can read the key material either way, and the token only grants access to a loopback daemon on the user's own machine |
 | `daemon.extension_origin` | `chrome-extension://<id>` | What the daemon will allow via CORS |
 | `ui.theme_override` | `"system" \| "dark" \| "light"` | Optional |
 | `ui.panel_position` | `{ x, y, width, height }` per `pr_url` | Persisted floating widget geometry |
 | `session.presentations_muted` | `Record<session_id, bool>` | Per-session 🔇 mute state |
 | `ui.protocol_mismatch` | `{ at, daemon, extension }` or absent | Set by the soft protocol-version check; surfaced in Options diagnostics |
+| `ui.last_daemon_error` | `{ at, message }` | Most recent daemon failure, for Options diagnostics |
+| `ui.last_daemon_ok_at` | epoch ms | Last successful daemon call |
+| `ui.diff_change_dismissed` | per `pr_url` | Suppresses the repeat "the diff changed" notice |
+| `onboarding.first_pair_seen` | bool | Gates the one-time post-pairing hint |
 
 Nothing about conversations, sessions, or PRs lives here. The daemon is the source of truth.
 
@@ -283,10 +295,10 @@ Useful for jumping back to a PR you reviewed yesterday without having to navigat
 
 ## Options Page
 
-- **Daemon pairing** (endpoint + token). Accepts a typed pairing code and also handles pairing **deep-links** (`?endpoint=…&code=…`): when the options page is opened with those query params it pre-fills and can auto-complete pairing. This is the default pairing path (option **B** above); manual code entry remains the fallback.
+- **Daemon pairing** (endpoint + token). Accepts a typed pairing code and also handles pairing **deep-links** of the form `#pair?endpoint=<url>&code=<code>[&auto=1]`: the parser reads `location.hash` (not the query string) and requires the `pair` prefix. It pre-fills endpoint and code, and completes pairing without interaction only when `auto=1` is present. This is the default pairing path (option **B** above); manual code entry remains the fallback.
 - **Theme override.**
-- **Presentation settings** — auto-clear on new question (default on), `open_link` target toggles, and a global "disable presentation tools" switch.
-- **Per-PR panel reset** (clears stored positions).
+- **Presentation settings** — auto-clear on new question, `open_link` target toggles, and a global "disable presentation tools" switch. *Not built.* The page ships three sections only: Pairing, Theme override, Diagnostics. `allowOpenLinkTab` / `allowOpenLinkPanel` are hardcoded defaults with no UI, and `autoClearOnNewQuestion` is declared but never read — clearing on a new question is unconditional. The per-session 🔇 mute in the panel header *is* shipped and covers the "disable presentations" need for now.
+- **Per-PR panel reset** (clears stored positions). *Not built.*
 - **Diagnostics** (last daemon error, time of last successful call, and any protocol-version mismatch recorded by the soft health check).
 
 Provider/LLM/API-key config is **not** here. That's on the daemon's config UI.
@@ -296,6 +308,14 @@ Provider/LLM/API-key config is **not** here. That's on the daemon's config UI.
 On session init the extension reads `protocol_version` from `GET /v1/health` and compares it to its own `PROTOCOL_VERSION` constant (mirrored from `libre-cr-common`). A mismatch never blocks anything — minor versions are wire-compatible by spec — it logs a console warning and records `ui.protocol_mismatch` for the Options diagnostics panel. A missing field (an older, pre-versioning daemon) is treated as compatible.
 
 ## Error Surfaces
+
+> **Status: aspirational.** The panel's state union is
+> `loading | not_paired | preparing | ready | error` and every branch renders
+> plain text. There is no toolbar pill, no retry button, no elapsed estimate
+> and no "report mismatch" link. The table is the target; what ships today is
+> the message, not the affordance. Two rows *are* real in substance: a
+> not-paired session shows a pairing prompt, and a turn error renders inline
+> in the turn.
 
 | Condition | UI |
 |---|---|

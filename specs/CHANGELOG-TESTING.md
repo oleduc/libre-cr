@@ -109,7 +109,7 @@ Critical and the new Important findings.
 - **Mute toggle made real (both sides).** `AskInit` gained a `mute_presentations`
   field; a muted turn does not register presentation tools at all, and the
   extension also gates locally (`presentation_muted`). Previously a placebo.
-  *Trigger: E1 / I16. Specs: 04 § Ask/streaming Q&A; 05 § Presentation Handler.*
+  *Trigger: E1 / I16. Specs: 04 § Ask / streaming Q&A; 05 § Presentation Handler.*
 - **Turn auto-collapse fixed.** Collapse is now a controlled prop owned by the
   panel rather than seeded once from local state. *Trigger: E2. Specs: 05 § Q&A Panel.*
 - **`new WebSocket()` constructor throw** wrapped so `inflight` can't stick.
@@ -360,7 +360,7 @@ remains deliberately unfixed. None of the open items block the demo path.
   `entrypoints/background.ts`) via the `fetch` / `wsFactory` injection points
   the client already had; the browser-E2E fixture page now carries
   `connect-src 'self'` so the suite exercises this for real. *Trigger: manual
-  testing Tier 2. Specs: 02 transports; 04 § HTTP API, § Pairing; 05
+  testing Tier 2. Specs: 02 transports; 04 § HTTP / WebSocket API, § Pairing; 05
   § Transport from a Content Script, § Background Service Worker.*
 - **GitHub's React "changes" UI broke every DOM selector.** github.com now
   redirects `/pull/<n>/files` → `/pull/<n>/changes`, a React page with none of
@@ -406,15 +406,15 @@ remains deliberately unfixed. None of the open items block the demo path.
   **Fixed:** remote URL derived as `https://github.com/<owner>/<repo>.git`;
   discovery miss → `clone_repo` into the managed cache → `prepare_worktree`;
   the panel stops on `status.error` and shows it, and waits long enough for a
-  first clone. *Trigger: manual testing Tier 3. Specs: 04 § Worktree
-  orchestration; 05 § Content Script Lifecycle.*
+  first clone. *Trigger: manual testing Tier 3. Specs: 04 § Internal
+  Architecture (worktree orchestration); 05 § Content Script Lifecycle.*
 - **First clone of a real repo hit the 10 s code-daemon call timeout.**
   `SpawnedClient` applied one `CALL_TIMEOUT` (10 s) to every call; a 300 MB
   clone took longer, the review daemon reported "clone failed: code daemon
   call timeout" while the clone completed underneath. **Fixed:**
   `call_with_timeout` on the client trait; `clone_repo` / `prepare_worktree`
   get 10 min, tool calls keep 10 s. *Trigger: manual testing Tier 3, private
-  repo. Specs: 04 § Worktree orchestration.*
+  repo. Specs: 04 § Internal Architecture (worktree orchestration).*
 - **Presentation effects were invisible.** `highlight_lines` tagged rows with
   `libre-cr-effect libre-cr-hl-<color>` and `annotate_line` inserted rows, but
   no stylesheet anywhere defined those classes — the only `<style>` lives in the
@@ -471,7 +471,7 @@ remains deliberately unfixed. None of the open items block the demo path.
   it attributes base-branch commits to the PR; the system
   prompt states the checkout path and base branch and that code tools already
   operate there. *Trigger: manual testing Tier 3. Specs: 04 § Agent Loop,
-  § Tool Composition.*
+  § Tool Composition Per Verb (in 06).*
 - **Export "tool call log" option.** Diagnosing presentation failures needed
   the tool inputs/results, which the export only summarised as `name (ms, ok)`
   — "ok" there is transport, not the tool's outcome — so they had to be read
@@ -610,7 +610,24 @@ remains deliberately unfixed. None of the open items block the demo path.
   I24 intent; HTTP-level provider integration tests still thin.)*
 - **Windows `send_term` graceful stop** still wastes the deadline then hard-kills.
   *(round-1 I20.)*
-- **Log rotation** is still a TODO; logs grow unbounded. *(round-1 I21.)*
+- **Log rotation: decided against.** Logs grow unbounded — the daemons write to
+  stderr and the supervisor appends that stream to disk with no rotation or
+  retention. Not a defect to fix: for a local single-user tool `libre-cr logs`
+  plus manual deletion is the accepted answer. The specs claimed daily rotation
+  with 14-day retention and now say this instead. *(round-1 I21, closed as
+  won't-do; spec audit finding 7.)*
+- **No graceful shutdown in the review daemon.** It installs no signal handler,
+  so a `SIGTERM` ends the process abruptly: in-flight turns are not marked
+  `cancelled`, and SQLite is not flushed deliberately. Per-connection
+  cancellation *is* implemented, and the supervisor gives the daemon 5 s before
+  `SIGKILL` — time it currently spends doing nothing. The specs claimed the
+  drain and now mark it unbuilt. *(spec audit finding 27.)*
+- **`clone_repo` has no containment check, and no daemon checks config file
+  mode.** The specs asserted both as enforced. `target_dir` is tilde-expanded
+  and used verbatim, so a caller naming a path outside `data_dir` is honoured;
+  nothing inspects config permissions. Exposure is bounded — the tool is hidden
+  from the model, so it takes a caller holding the bearer token — but the
+  containment check is cheap and worth having. *(spec audit findings 6.)*
 - **`SpawnedClient` reconnect/restart loop** still lightly covered. *(round-1 I23.)*
 - **`MockCodeDaemonClient` tool/schema drift** vs the real daemon. *(round-1 I25.)*
 

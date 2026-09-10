@@ -27,10 +27,10 @@ All tools are exposed via the MCP `tools/list` and `tools/call` methods. Tool na
   Walk the given root directories (default: configured roots), find git repos, register them. Returns what it added. Idempotent.
 
 - **`clone_repo`** `{ remote_url: string, target_dir?: string }` → `{ repo_id, repo_path }`
-  Clone the given repo into `target_dir` (defaults to managed cache: `~/.local/share/libre-cr-code/repos/<owner>/<repo>`).
+  Clone the given repo into `target_dir` (defaults to managed cache: `~/.local/share/libre-cr-code/repos/<repo_id>`, where `repo_id` is `<host>/<owner>/<repo>`).
 
 - **`prepare_worktree`** `{ repo_id: string, ref: string, name?: string }` → `{ worktree_path }`
-  Fetch `ref` (e.g., `pull/123/head`) and materialize it as a worktree under `~/.local/share/libre-cr-code/worktrees/<repo_id>/<name|sanitized-ref>`. Idempotent — returns the existing worktree if already prepared. Tracks last-used timestamp for LRU eviction.
+  Fetch `ref` (e.g., `pull/123/head`) and materialize it as a worktree under `~/.local/share/libre-cr-code/worktrees/<sanitized-repo_id>/<name|sanitized-ref>` — both segments have `/` replaced by `_`, so a real path is `…/worktrees/github.com_owner_repo/refs_pull_123_head`. Idempotent — returns the existing worktree if already prepared. Tracks last-used timestamp for LRU eviction.
 
 - **`list_worktrees`** `{ repo_id?: string }` → `{ worktrees: [{ repo_id, ref, path, last_used_at }] }`
 
@@ -47,20 +47,32 @@ All file-reading tools take an optional `ref` argument. If omitted, they read fr
   unnumbered blob has to *count* to answer "what is line 38", and got it wrong in
   the field. See `10-grounding-and-context.md` § Evidence on the wire.
 
-- **`list_dir`** `{ repo_path: string, dir: string, ref?: string, recursive?: bool, max_depth?: number }` → `{ entries: [{ name, kind: "file"|"dir", size? }] }`
+- **`list_dir`** `{ repo_path: string, dir: string, ref?: string }` → `{ entries: [{ name, kind: "file"|"dir", size? }] }`
+  Single level. There is no `recursive` / `max_depth`: both backends list one directory.
 
 - **`stat_file`** `{ repo_path: string, file: string, ref?: string }` → `{ size, language, is_binary }`
   Cheap metadata read. `language` inferred from extension + content-based fallback.
 
 ### Search
 
-- **`grep`** `{ repo_path: string, pattern: string, ref?: string, paths?: string[], glob?: string, fixed_string?: bool, max_matches?: number }` → `{ matches: [{ file, line, column, content }], truncated: bool }`
+- **`grep`** `{ repo_path: string, pattern: string, paths?: string[], glob?: string, fixed_string?: bool, max_matches?: number }` → `{ matches: [{ file, line, column, content }], truncated: bool }`
+  Working tree only. The schema still declares `ref`, but the handler never reads it — a caller passing one silently gets working-tree results. `column` is always `1`; ripgrep's column is not plumbed through.
   ripgrep-backed text search. `paths` limits to a set of files/dirs; `glob` filters by pattern. Defaults: regex, max 200 matches, then `truncated: true`.
 
 - **`ast_search`** `{ repo_path: string, language: string, pattern: string, ref?: string, paths?: string[] }` → `{ matches: [{ file, range: { start_line, end_line, start_col, end_col }, captured_text }] }`
   ast-grep structural search. `pattern` is in ast-grep's pattern syntax (e.g., `foo($A)` matches any call to `foo` with one argument). Required input for "find callers" and similar.
 
 ### Symbols (phase B: AST-derived)
+
+> **Status: not built.** No tree-sitter grammar is compiled in
+> (`treesitter::has_grammar` returns `false` unconditionally) and no
+> `ast_grep_core` dependency exists, so `ast_search`, `list_symbols`,
+> `find_definition` and `find_references` are registered stubs that always
+> answer `unsupported_language`. `plan.md` carries them as a Phase 1 task;
+> Phase C's LSP backends are specified to *fall back* to these, so the AST
+> layer remains on the plan rather than superseded. Everything in this
+> subsection and in § Language Support below describes the intended
+> behaviour, not current behaviour.
 
 - **`find_definition`** `{ repo_path: string, file: string, line: number, column: number, ref?: string }` → `{ definitions: [{ file, range, symbol_name, kind, confidence }] }`
   Phase B: tree-sitter-based — finds the identifier at the cursor, then ast-grep-searches the repo for definitions matching the identifier's name and kind. **Name-based, not semantic** (see Language Support below). Each result includes a `confidence` field: `high` (unique name + matching kind), `medium` (one of a few candidates), `low` (common name with many candidates). Phase C: routes to LSP `textDocument/definition` when available; confidence becomes `lsp` (semantic).
@@ -73,7 +85,8 @@ All file-reading tools take an optional `ref` argument. If omitted, they read fr
 
 ### Git operations
 
-- **`git_log`** `{ repo_path: string, file?: string, ref?: string, max_count?: number, since?: string }` → `{ commits: [{ sha, author, date, summary }] }`
+- **`git_log`** `{ repo_path: string, file?: string, ref?: string, max_count?: number }` → `{ commits: [{ sha, author, date, summary }] }`
+  No date filter. Unknown properties are dropped silently by the validator, so a `since` would be accepted and ignored.
 
 - **`git_blame`** `{ repo_path: string, file: string, ref?: string, start_line?: number, end_line?: number }` → `{ lines: [{ line, sha, author, date, summary }] }`
 
@@ -90,6 +103,12 @@ All file-reading tools take an optional `ref` argument. If omitted, they read fr
 
 ## Language Support
 
+> **Status: the grammar-dependent half is not built.** See the marker under
+> § Symbols. The `Requires: nothing` rows in the table below are shipped and
+> accurate; every `grammar` row is intended behaviour. `detect_languages` is
+> shipped but is **extension-based only** — the content heuristics described
+> below do not exist, and an unrecognised extension yields `"Unknown"`.
+
 The daemon's tools fall into two coverage classes: **language-agnostic** (work on any file) and **language-specific** (require a tree-sitter grammar for the file's language).
 
 ### Coverage by tool
@@ -99,7 +118,7 @@ The daemon's tools fall into two coverage classes: **language-agnostic** (work o
 | `read_file`, `list_dir`, `stat_file` | nothing | any file |
 | `grep` | nothing | any text file |
 | `git_log`, `git_blame`, `git_show`, `git_diff` | nothing | any tracked file |
-| `detect_languages` | nothing (extension + content heuristics) | any repo |
+| `detect_languages` | nothing (extension only) | any repo |
 | `ast_search` | grammar | listed languages |
 | `list_symbols` | grammar + `tags.scm` query | listed languages |
 | `find_definition`, `find_references` | grammar + name-based query (Phase B) or LSP (Phase C) | listed languages |
@@ -107,7 +126,8 @@ The daemon's tools fall into two coverage classes: **language-agnostic** (work o
 
 ### Phase B grammar set
 
-These languages are compiled in to `libre-cr-code` by default. All AST-aware tools work for them:
+**Intended, not present.** None of these grammars is compiled in today; the
+table is the target set. When it lands, all AST-aware tools work for them:
 
 | Language | Grammar crate | Notes |
 |---|---|---|
@@ -295,12 +315,12 @@ The registry database carries a `_schema_version` table with versioned, forward-
 ### Search backends
 
 - **ripgrep:** invoked as a library via the `grep` crate. ~No process spawn cost.
-- **ast-grep:** invoked as a library via `ast_grep_core`. Tree-sitter parsing is the dominant cost; we cache parsed ASTs per `(file_path, mtime)` in an LRU.
+- **ast-grep:** *intended* — invoked as a library via `ast_grep_core`, caching parsed ASTs per `(file_path, mtime)` in an LRU. Neither the dependency nor the cache exists yet (`ast_cache_size` is dead config); see the status marker under § Symbols.
 - **tree-sitter:** language grammars compiled in. See **Language Support** below for the Phase B set. Additional grammars are an additive change.
 
 ### Git backend
 
-- **gitoxide** for read operations (`log`, `blame`, `show`, `diff`, `ls-tree`).
+- **gitoxide** for `log` and tree reads (`ls-tree`, blob reads). `blame`, `show` and `diff` shell out to the `git` CLI today, despite being reads.
 - **`git` CLI fallback** for `fetch` and `worktree add` — gitoxide's coverage of these is improving but uneven across versions. Spawning the git CLI is acceptable for these slow operations (network-bound or filesystem-bound anyway).
 - The git CLI dependency is documented but not bundled. We assume any developer has git.
 
@@ -347,10 +367,9 @@ libre-cr-code mcp-socket --path <socket>         # speak MCP over Unix socket
 libre-cr-code scan [--roots ~/code,…]            # scan + register
 libre-cr-code discover <remote-url>              # print local path or exit nonzero
 libre-cr-code prepare <repo-id> <ref>            # prepare a worktree, print path
-libre-cr-code worktrees                          # list all worktrees + LRU stats
+libre-cr-code worktrees                          # list worktrees (paths, refs, timestamps)
 libre-cr-code evict --dry-run                    # show what eviction would remove
 libre-cr-code tools                              # list all MCP tools and their schemas
-libre-cr-code config edit                        # open config in $EDITOR
 libre-cr-code doctor                             # check git CLI, grammars, disk space
 ```
 
@@ -402,14 +421,14 @@ The review daemon translates these into user-facing messages with retry/recover 
 
 - Structured logs via `tracing`. Default level `info`; `RUST_LOG=debug` for verbose.
 - Per-tool spans with `tool_name`, `repo_id`, `latency_ms`, `result: ok|err`.
-- **No outbound telemetry.** Logs are local files only: `~/.local/state/libre-cr-code/log/<date>.log`. Rotated daily, kept 14 days.
+- **No outbound telemetry.** The daemon logs to **stderr only** — there is no log file, no rotation and no retention window; the supervisor is what captures the stream to disk (see `08-distribution.md`). `[logging] file` is accepted and ignored. Deliberate: for a local single-user tool the supervisor's append-only capture is enough, and rotation is not planned.
 
 ## Security Posture
 
 - The daemon reads anywhere the user's process can read. It can read SSH keys and other secrets if asked. This is acceptable for a local dev tool; we are not a sandboxed runtime.
 - The MCP server has no authentication of its own. Trust model: the parent that spawned the stdio/socket connection is trusted. Unix socket permissions (0600, owned by user) gate access.
 - Tools that take a `file` argument resolve relative to `repo_path` and reject paths that escape it via `..` or symlinks pointing outside. Defense in depth against accidents, not a sandbox.
-- `clone_repo` writes only inside `data_dir`. The managed cache is never outside the configured root.
+- `clone_repo` **should** write only inside `data_dir`. *Not enforced today:* `target_dir` is tilde-expanded and used verbatim, so a caller naming an absolute path outside the root is honoured. Future work — the tool is not reachable by the model (see `10-grounding-and-context.md`), which bounds the exposure to a caller who already holds the bearer token.
 
 ## Versioning and Compatibility
 
