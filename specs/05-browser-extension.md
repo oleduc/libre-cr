@@ -33,7 +33,9 @@ These elements ported as-is or with minor edits:
 
 ## Tech Stack
 
-Same as POC: WXT + React + TypeScript. Manifest V3. Tailwind in Shadow DOM via WXT's CSS injection mode. Anthropic SDK (and friends) are gone; what remains is HTTP + WebSocket + JSON.
+Same as POC: WXT + React + TypeScript. Manifest V3. Anthropic SDK (and friends) are gone; what remains is HTTP + WebSocket + JSON.
+
+Styling is a hand-written CSS string injected into the panel's shadow root, plus a separate page-level sheet for diff effects installed via `adoptedStyleSheets` (CSSOM insertion survives GitHub's `style-src` CSP). There is no Tailwind and no CSS framework: the panel is a few hundred lines of CSS, and the effect styles must key on `data-*` attributes rather than classes anyway (see `09-presentation-tools.md`).
 
 ## Manifest Surface
 
@@ -41,19 +43,19 @@ Same as POC: WXT + React + TypeScript. Manifest V3. Tailwind in Shadow DOM via W
 {
   "manifest_version": 3,
   "permissions": ["storage"],
-  "host_permissions": ["*://github.com/*"],
+  "host_permissions": ["*://github.com/*", "http://127.0.0.1/*", "http://localhost/*"],
   "content_scripts": [{
     "matches": ["*://github.com/*/pull/*", "*://github.com/*/pull/*/files*"],
     "js": ["content-script.js"],
     "run_at": "document_idle"
   }],
   "background": { "service_worker": "background.js" },
-  "options_page": "options.html",
+  "options_ui": { "page": "options.html", "open_in_tab": true },
   "action": { "default_popup": "popup.html" }
 }
 ```
 
-`host_permissions` does not include `127.0.0.1` — we'll use `fetch` from the content script's origin, which has `connect-src` semantics. The daemon's CORS handling allows the extension origin explicitly. If we hit issues we can add `connect-src` via `host_permissions` or move daemon calls to the background script (where `host_permissions` apply).
+`host_permissions` **does** include loopback, and daemon calls **are** relayed through the background service worker. Both were forced by the same discovery: a content script's `fetch` carries the *page's* origin and the page's CSP, and github.com's `connect-src` excludes `127.0.0.1`, so direct calls never left the browser. See § Transport from a Content Script, and `CHANGELOG-TESTING.md` for the diagnosis.
 
 ## Transport from a Content Script
 
@@ -118,18 +120,90 @@ The "CR" button stays minimal — it indicates connectivity and opens the Q&A pa
 
 ## Selection Model
 
-Reviewers select code in three ways. Each produces a structured `Selection` object the extension sends with the question.
+Reviewers select code in three ways, or pick a review comment. Each produces a structured `Selection` object the extension sends with the question. Every variant may carry the selected text (see `10-grounding-and-context.md` § Evidence on the wire).
 
 ```ts
 type Selection =
-  | { kind: "line",  file: string, line: number }
-  | { kind: "range", file: string, start_line: number, end_line: number }
-  | { kind: "symbol", file: string, line: number, column: number, identifier: string };
+  | { kind: "line",  file: string, line: number, text?: string }
+  | { kind: "range", file: string, start_line: number, end_line: number, text?: string }
+  | { kind: "symbol", file: string, line: number, column: number, identifier: string, text?: string }
+  | { kind: "comment", comment_id: string, file: string, line: number,
+      side: "left" | "right", comments: { author: string, body: string }[] };
 ```
 
 - **Line:** click on a diff line number gutter.
 - **Range:** shift-click extends; multi-line drag selection.
-- **Symbol:** hover-over-or-Cmd-click on an identifier. The extension's tree-sitter-lite layer (a minimal TS port for picking the identifier under the cursor) identifies the token; the daemon's `find_definition` resolves it.
+- **Symbol:** Cmd/Ctrl-click on an identifier. `pickIdentifier` is a regex over the clicked line's text, with the column derived from the mouse offset across the cell — there is no tree-sitter layer in the extension, minimal or otherwise. The daemon's `find_definition` would resolve it, but that tool is a stub (see `03-code-daemon.md` § Symbols), so a symbol selection is currently only an anchor for the question.
+
+### Review-comment selection
+
+> **Status: specified, not built.** Written before the implementation, unlike
+> most of what follows a testing round. The selectors below were read off a
+> live PR page rather than guessed — see the table — but nothing here has run
+> yet.
+
+A reviewer can pick a **GitHub review comment** — one of the threads that
+annotate a source line in the diff — and ask about it: *"is this concern
+valid?"*, *"did the reply actually answer it?"* The comment is context for the
+question, exactly like a code selection.
+
+**The unit is the thread, not a single comment.** A review thread accumulates
+replies, and the reply is frequently where the answer lives ("intentional,
+because X"). Capturing only the top comment would routinely drop the half that
+resolves the question. `comment_id` is the top comment's id — the thread's
+identity for citation and dedup — and `comments` carries the thread oldest
+first.
+
+**Why the anchor matters more than the body.** An inline review comment knows
+its `file` and `line`, so the selection hands the model both the concern *and*
+where it points; the model can then read that location itself with
+`get_pr_diff --paths` or `read_file`. That is what makes a separate
+multi-item "context basket" unnecessary: the anchor already links comment to
+code.
+
+`side` is carried because a comment on a *removed* line has an OLD-side line
+number, and resolving it against the new file would read the wrong line. (The
+three code variants do not carry side — a pre-existing gap, not widened here.)
+
+**Gesture: a hover affordance, not a click.** Hovering a thread reveals a
+small "Ask about this" control; clicking it sets the selection and opens the
+panel. A modifier-click was rejected: a comment body is an interactive region
+full of links, `Reply` and `Resolve`, and hijacking clicks there is materially
+riskier than in a diff cell. The control is our own injected element, so it
+competes with nothing.
+
+Injection follows the same discipline as presentation effects
+(`09-presentation-tools.md`): marked with `data-libre-cr-*` attributes, since
+React rewrites `className`; created on demand from a delegated `mouseover`
+rather than pre-injected, because comment threads are **virtualized** — only
+the mounted file's threads exist in the DOM at all.
+
+**Verified selectors** (read from a live PR, 2026-09-10; CSS-module class
+names such as `ReviewThread-module__…` are build-hashed and must never be
+used):
+
+| What | Selector | Verified value |
+|---|---|---|
+| Thread container | `[data-testid="review-thread"]` | 1 mounted of 20 threads on the PR |
+| Comment id | descendant `[id^="r"]` matching `^r\d+$` | `r3872880867` — the same id GitHub's REST API uses |
+| Annotated file | enclosing `table[aria-label^="Diff for: "]` | `crates/libre-cr-review/src/provider/anthropic.rs` |
+| Annotated line + side | the thread's **own** `tr`, `td[data-line-number][data-diff-side]` | `36` / `right` — matches the API's `line` for that comment |
+| Comment body | `.markdown-body` within the thread | present |
+| Author | `[data-testid="avatar-link"]` href, or the header's `a[href^="/"]` | `coderabbitai[bot]` |
+
+The line comes from the thread's own row, **not** from the preceding code row.
+An earlier draft of this design walked backwards to the previous row and got
+`35` for a comment the API places on `36`; the thread row carries the correct
+number itself.
+
+Two things are designed but unobserved, and should be checked when
+implementing: a thread with **replies** (the specimen had exactly one comment,
+one header, one body), and a **resolved** thread (the specimen was unresolved;
+`[data-testid="unified-comment-resolve-button"]` exists as a control).
+
+Body text is capped at capture like other selection text (4,000 chars), and
+the daemon quotes it fenced under the same 2,000-char cap it already applies —
+no new knob.
 
 The selection is sticky — it persists until cleared or replaced. The Q&A panel header shows the current selection ("`src/auth.ts:42-48` selected · [×]"). Asking a question without a selection is allowed (it's just "ask about this PR").
 
@@ -173,14 +247,51 @@ Behavior:
 - **Notes** look distinct from Q&A turns: gray background, no thinking trace, simple text.
 - **Verbs** are buttons. Clicking one immediately runs the verb against the current selection — no question text required. The result appears as a Q&A turn with the verb's name as the question.
 - **Question box** accepts text. Enter submits. Shift-Enter newlines. Each submission is a new WS connection (per `04-review-daemon.md`).
+- **Answers render as markdown.** Model output is markdown, and reading it raw
+  cost more than it saved. `marked` produces the HTML and an allowlist
+  sanitizer walks it before it reaches the DOM — model output must never reach
+  `innerHTML` unfiltered, so this is the one place `dangerouslySetInnerHTML` is
+  permitted, behind that sanitizer. Links are `http(s)`-only and open in a new
+  tab; fenced-code language classes survive, because copy needs them.
+- **Copying a rendered answer yields markdown.** The rendered tag set is
+  exactly the sanitizer's allowlist, so a small DOM→markdown serializer
+  round-trips the selected fragment on `copy`: emphasis, inline and fenced code
+  (with language), links, nested lists, tables, blockquotes, headings and
+  task boxes go to `text/plain`, with the HTML kept for rich-text targets. A
+  partial inline selection stays plain text. Pasting an answer into a review
+  comment was otherwise a flattened wall of text.
+- **Truncated evidence is announced.** When a `tool_result` frame carries
+  `truncated_from`, the trace line is marked (`⚠ truncated from 589,499 chars`)
+  and the turn shows a notice naming how many results were shortened and where
+  to raise the caps. A shortened answer that looks complete is worse than a
+  visible gap — see `10-grounding-and-context.md` § Reporting what was cut.
+- **Conversation restores.** The panel rebuilds prior turns from
+  `GET /v1/sessions/:id` on load — collapsed Q&As with their selection chips,
+  editable notes, and markers for cancelled or failed turns. A session with no
+  history starts *closed* behind the floating CR button; only history or an
+  error opens it unasked. Restored turns keep their daemon ids so a later
+  question can name them in `context_turn_ids`.
+- **Keystrokes stay in the panel.** GitHub binds single-key document-level
+  hotkeys (`t` focuses its file finder), so the panel stops propagation of key
+  events originating inside it. Typing a question must never drive the host
+  page.
+- **The panel is resizable and re-openable.** Native CSS `resize: both` with the
+  size persisted per PR alongside the drag position; closing leaves a floating
+  button that brings it back, rather than requiring a page reload.
 
 ## Diff Interaction Layer
 
 The diff itself isn't owned by us, but we layer a few things on top:
 
-- **Line highlights.** When a question's answer references specific lines, the panel can offer "show on diff" — clicking scrolls the diff to the file/line and applies a temporary highlight. Same DOM injection technique the POC used; namespaced by `data-libre-cr-*` attributes for cleanup.
-- **Reference popovers.** When the agent uses `find_references` and surfaces line numbers in its answer, we render the line numbers as clickable links that scroll-to + highlight.
-- **Selection gutter affordance.** Hovering a diff line number reveals a small "Ask" button in the gutter that opens the panel with the line preselected.
+> **Status:** only the last item is built. The `SelectionLayer` installs a
+> single capture `click` listener and renders nothing — there is no hover
+> affordance, no popover, and no "show on diff" control. Selection instead
+> rides GitHub's own gestures (see § Selection Model). The three unbuilt
+> items stay here as intended behaviour.
+
+- **Line highlights.** *Not built.* When a question's answer references specific lines, the panel would offer "show on diff" — clicking scrolls the diff to the file/line and applies a temporary highlight. (The underlying mechanism exists and is used by presentation tools; what is missing is the panel-side affordance.)
+- **Reference popovers.** *Not built,* and blocked on `find_references`, which is a stub (`03-code-daemon.md` § Symbols).
+- **Selection gutter affordance.** *Not built.* Hovering a diff line number would reveal a small "Ask" button in the gutter.
 - **Presentation-tool effects.** During a turn, the LLM may issue `presentation_call` frames over the WS (highlight a line, annotate, scroll, open a link). The extension executes them via the same DOM injection layer. See `09-presentation-tools.md`.
 
 We deliberately do **not** auto-annotate the diff. Annotations come only from user actions (clicking a reference), explicit `add_note` calls (visible in the panel, not the diff), or presentation-tool calls produced by the LLM *in response to* a user question — never preemptively.
@@ -222,12 +333,16 @@ Settings (options page) for presentation behavior:
 | Key | Value | Notes |
 |---|---|---|
 | `daemon.endpoint` | `http://127.0.0.1:<port>` | Resolved during pairing |
-| `daemon.token` | bearer string | Stored encrypted with the extension's own obfuscation; the daemon's authoritative copy is on disk |
+| `daemon.token` | bearer string | **Plaintext** in `browser.storage.local`; the daemon's authoritative copy is on disk. Not obfuscated or encrypted, and not planned to be: `storage.local` is already origin-isolated to the extension, anything with code execution in that context can read the key material either way, and the token only grants access to a loopback daemon on the user's own machine |
 | `daemon.extension_origin` | `chrome-extension://<id>` | What the daemon will allow via CORS |
 | `ui.theme_override` | `"system" \| "dark" \| "light"` | Optional |
 | `ui.panel_position` | `{ x, y, width, height }` per `pr_url` | Persisted floating widget geometry |
 | `session.presentations_muted` | `Record<session_id, bool>` | Per-session 🔇 mute state |
 | `ui.protocol_mismatch` | `{ at, daemon, extension }` or absent | Set by the soft protocol-version check; surfaced in Options diagnostics |
+| `ui.last_daemon_error` | `{ at, message }` | Most recent daemon failure, for Options diagnostics |
+| `ui.last_daemon_ok_at` | epoch ms | Last successful daemon call |
+| `ui.diff_change_dismissed` | per `pr_url` | Suppresses the repeat "the diff changed" notice |
+| `onboarding.first_pair_seen` | bool | Gates the one-time post-pairing hint |
 
 Nothing about conversations, sessions, or PRs lives here. The daemon is the source of truth.
 
@@ -252,10 +367,10 @@ Useful for jumping back to a PR you reviewed yesterday without having to navigat
 
 ## Options Page
 
-- **Daemon pairing** (endpoint + token). Accepts a typed pairing code and also handles pairing **deep-links** (`?endpoint=…&code=…`): when the options page is opened with those query params it pre-fills and can auto-complete pairing. This is the default pairing path (option **B** above); manual code entry remains the fallback.
+- **Daemon pairing** (endpoint + token). Accepts a typed pairing code and also handles pairing **deep-links** of the form `#pair?endpoint=<url>&code=<code>[&auto=1]`: the parser reads `location.hash` (not the query string) and requires the `pair` prefix. It pre-fills endpoint and code, and completes pairing without interaction only when `auto=1` is present. This is the default pairing path (option **B** above); manual code entry remains the fallback.
 - **Theme override.**
-- **Presentation settings** — auto-clear on new question (default on), `open_link` target toggles, and a global "disable presentation tools" switch.
-- **Per-PR panel reset** (clears stored positions).
+- **Presentation settings** — auto-clear on new question, `open_link` target toggles, and a global "disable presentation tools" switch. *Not built.* The page ships three sections only: Pairing, Theme override, Diagnostics. `allowOpenLinkTab` / `allowOpenLinkPanel` are hardcoded defaults with no UI, and `autoClearOnNewQuestion` is declared but never read — clearing on a new question is unconditional. The per-session 🔇 mute in the panel header *is* shipped and covers the "disable presentations" need for now.
+- **Per-PR panel reset** (clears stored positions). *Not built.*
 - **Diagnostics** (last daemon error, time of last successful call, and any protocol-version mismatch recorded by the soft health check).
 
 Provider/LLM/API-key config is **not** here. That's on the daemon's config UI.
@@ -265,6 +380,14 @@ Provider/LLM/API-key config is **not** here. That's on the daemon's config UI.
 On session init the extension reads `protocol_version` from `GET /v1/health` and compares it to its own `PROTOCOL_VERSION` constant (mirrored from `libre-cr-common`). A mismatch never blocks anything — minor versions are wire-compatible by spec — it logs a console warning and records `ui.protocol_mismatch` for the Options diagnostics panel. A missing field (an older, pre-versioning daemon) is treated as compatible.
 
 ## Error Surfaces
+
+> **Status: aspirational.** The panel's state union is
+> `loading | not_paired | preparing | ready | error` and every branch renders
+> plain text. There is no toolbar pill, no retry button, no elapsed estimate
+> and no "report mismatch" link. The table is the target; what ships today is
+> the message, not the affordance. Two rows *are* real in substance: a
+> not-paired session shows a pairing prompt, and a turn error renders inline
+> in the turn.
 
 | Condition | UI |
 |---|---|

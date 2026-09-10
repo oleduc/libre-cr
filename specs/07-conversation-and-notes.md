@@ -32,7 +32,9 @@ The Q&A panel's input box has two buttons: "Add note" and "Ask ▶".
 - **Ask ▶** does what it says.
 - **Add note** posts the input as a note. No LLM call.
 
-A note can have an attached selection (the user's current selection at the time) and a severity. Severity is selected from a small picker that appears when you click "Add note":
+A note can have an attached selection (the user's current selection at the time) and a severity.
+
+**Current behaviour:** "Add note" posts immediately with no severity step, and the note defaults to `info` (applied by the server). The picker below is what *Save as note* on an answer and the note-edit control offer today; wiring it into the direct Add-note path is intended, not built.
 
 ```
 [ + Add note ]
@@ -54,7 +56,7 @@ Notes are visually distinct in the conversation timeline (no thinking trace, gra
 
 ### 2. Agent-flagged note via `add_note` tool
 
-If a verb's system prompt instructs the agent to flag issues (we may add such a verb later), the agent can call the internal `add_note` tool. That creates a turn with `kind = "note"`, `user_content = <agent's note>`, `severity = <as specified>`, and a small marker that it was agent-created. The reviewer sees it inline, can edit or delete it, and it participates in export.
+If a verb's system prompt instructs the agent to flag issues (we may add such a verb later), the agent can call the internal `add_note` tool. That creates a turn with `kind = "note"`, `user_content = <agent's note>`, `severity = <as specified>`, and — intended but **not built** — a marker that it was agent-created. There is no provenance column on `turns`, so an agent note is currently indistinguishable from a user note. The reviewer sees it inline, can edit or delete it, and it participates in export.
 
 Phase B does not include a verb that auto-flags issues, but the mechanism is there so verbs can use it sparingly when the answer is "yes, there is an issue and it's specific enough to record."
 
@@ -118,7 +120,7 @@ The export endpoint assembles notes into a Markdown draft. Conversation turns ar
 ```markdown
 # Review: PR #123 — feat: bcrypt migration
 
-## ⚠ Warning
+## Warning
 
 - `src/auth/legacy.ts:88` — Legacy path still calls md5. Verify
   IS_LEGACY_USERS is removed before merge.
@@ -144,18 +146,18 @@ Group order: Critical → Warning → Suggestion → Info. Within each group, no
 ```markdown
 # Review: PR #123 — feat: bcrypt migration
 
-## ⚠ Warning
+## Warning
 
 - `src/auth/legacy.ts:88` — Legacy path still calls md5.
 
-  <details>
-  <summary>Investigation</summary>
-  Asked: "Where is bcryptHash used outside tests?"
-  Found: 1 reference in src/auth/legacy.ts:88, guarded by IS_LEGACY_USERS.
-  </details>
-
 …
 ```
+
+The verbose format does **not** nest an investigation under each note. Notes are
+grouped by severity first; every Q&A turn then follows in one trailing
+`## Investigation context` section, each as `### Q:` / answer, with the tool
+calls in a `<details><summary>tools</summary>` block. Notes and investigations
+are never interleaved.
 
 The reviewer picks the format in the export modal:
 
@@ -226,10 +228,10 @@ The conversation FTS index supports:
 
 ```
 GET /v1/search?q=<query>&limit=20
-→ [
-    { session_id, pr_url, turn_id, snippet, score },
-    …
-  ]
+→ { "results": [
+      { session_id, pr_url, turn_id, snippet, score },
+      …
+  ] }
 ```
 
 Used by the popup's search box. Lets the reviewer find "where did I previously discuss this same problem?" across all PRs.

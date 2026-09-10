@@ -19,7 +19,7 @@ Presentation tools in v2 are different along three axes:
 | Salience | Always-on, persistent | Visible while the turn is "active"; user clears between turns or globally |
 | Text role | Annotations were the output | Answer text is the output; presentation is supplemental |
 
-The mechanism (DOM injection, namespaced effects, the existing `UIController` implementations from the POC) carries over. The product semantics are different.
+The mechanism (DOM injection, tagged effects, the POC's highlight/annotate/scroll code) carries over. The product semantics are different.
 
 ## Tool Catalog (Phase B)
 
@@ -28,10 +28,14 @@ Five tools. Conservative on purpose — we add more after watching real use.
 ### `highlight_lines`
 
 ```
-highlight_lines(file, start_line, end_line, color?: enum, label?: string)
+highlight_lines(file, start_line, end_line, label, detail, color?: enum)
 ```
 
-Visually highlight a line or range in the diff. Same overlay technique as the POC. `color` defaults to a neutral blue; the agent can pick from `red`, `yellow`, `green`, `blue`, `purple` for cue value. `label` is a tooltip.
+Visually highlight a line or range in the diff. `color` defaults to a neutral blue; the agent can pick from `red`, `yellow`, `green`, `blue`, `purple` for cue value.
+
+`label` and `detail` are **required**, in the schema as well as in the description. `label` is the short heading of the part (≤ 8 words), rendered as a caption chip at the right end of the range's first code line; `detail` is one to three plain sentences explaining that part, shown beside the code in the tour widget. `detail` has to stand on its own, because the reviewer reads it away from the chat.
+
+**A span is capped at 80 lines.** Over that, the head of the range is highlighted and the model is told it was clamped, in the `presentation_result`. This is a safety belt, not the mechanism: the tool description tells the model to make several narrow highlights instead of one sweeping range, because a highlight is meant to mark *the lines an answer talks about*. Asked to mark "the DynamoDB layer", a model once requested a 479-line span; each line was resolved by its own document-wide DOM query, and the tab died. Resolution is now one scan per call regardless of span, and the cap bounds the row mutations.
 
 Use when: the agent's answer cites a specific range and the reviewer would benefit from seeing it.
 
@@ -61,7 +65,9 @@ Use when: walking the reviewer through a sequence ("first this", "then that"), o
 open_link(url, target?: "tab" | "panel")
 ```
 
-Open a URL. `target="tab"` opens in a new browser tab (default). `target="panel"` opens it in a small embedded iframe panel within the Q&A widget when the URL is from a known-safe origin (GitHub-hosted issues, blob URLs, etc.).
+Open a URL. `target="tab"` opens in a new browser tab (default).
+
+`target="panel"` is **not built** — no embedded iframe exists anywhere in the extension, and the panel target is refused unless a context flag that has no UI is set. What the URL check actually allows: `https://` anywhere, `http://` on `127.0.0.1` only, and any root-relative path (`/owner/repo/pull/1`) — the last with no verification that the page is on GitHub. Tighter origin checking is intended, not built.
 
 Use when: the answer references another GitHub PR or issue, a commit URL, external documentation, etc. The LLM should not invent URLs — only use ones it discovered via tools.
 
@@ -98,7 +104,7 @@ Extension → daemon (in reply):
 { "type": "presentation_result",
   "call_id": "p_abc123",
   "ok": true,
-  "result": { "applied": true, "effect_id": "h_xyz" } }
+  "result": { "effect_id": "e_7" } }
 ```
 
 Or on failure:
@@ -111,11 +117,13 @@ Or on failure:
   "message": "src/auth.ts is not currently in the diff view." }
 ```
 
+A successful result carries `effect_id` (ids are `e_1`, `e_2`, … per session) and, when the call was altered to fit a limit, a `note` — that is the channel a clamped `highlight_lines` uses to tell the model its range was cut to the first 80 lines. There is no `applied` field.
+
 The daemon treats the `presentation_result` exactly like a regular tool result — feeds it back to the LLM as the tool result block. If the extension reports a failure (e.g., file not visible), the LLM sees that and can adapt (e.g., explain in text instead).
 
 ### Result envelope
 
-Successful results always include an `effect_id` so the extension and daemon can later reference the effect (e.g., for `clear_presentation`). Effects are also namespaced by `turn_id` so we can scope clearing.
+Successful results always include an `effect_id` so the extension and daemon can later reference the effect (e.g., for `clear_presentation`). Effect records carry an optional `turn_id`, but nothing assigns it today and there is no `session_id` on them — clearing is scoped by tag (`highlight` / `annotation` / `flash`), not by turn. Per-turn scoping is intended, not built.
 
 ## Effect Lifecycle
 
@@ -132,23 +140,49 @@ User does one of:
   • Navigates away          → effects cleared automatically on content script unload
 ```
 
-Reasonable defaults: auto-clear when the next question is asked, manual override available. Effects from notes (manually added by the user) are not cleared automatically — those are reviewer-curated.
+Clearing on a new question is **unconditional** today: there is no "keep effects" setting, and `autoClearOnNewQuestion` is declared but never read. Notes place no DOM effects at all — the only three tags are `highlight`, `annotation` and `flash`, all agent-placed — so there is nothing reviewer-curated to preserve. Both the setting and note-effect carve-out are intended, not built.
+
+### Applying effects to a page we do not own
+
+Two properties of GitHub's diff make the naive implementation fail:
+
+- **Effects are keyed by attribute, not class.** GitHub's React re-renders diff
+  rows on hover and selection and rewrites `className`, which silently erased
+  highlights. Effects are therefore marked with `data-libre-cr-*` attributes —
+  unknown `data-*` survives React's reconciliation — and styled through
+  `adoptedStyleSheets` on attribute selectors, which is also immune to the
+  page's CSP.
+- **The diff is virtualized.** Files away from the viewport are placeholder
+  regions with no rows, so an effect targeting one finds nothing.
+  `ensureFileRendered` scrolls the placeholder (or clicks the file-tree link)
+  into view and waits for the table to mount, with a deadline, before the
+  effect is applied. A file that never mounts yields `file_not_in_view` rather
+  than a silent no-op.
+
+Clearing distinguishes what we inserted from what we merely marked: annotation
+rows are ours and are removed, while highlight and flash markers sit on
+GitHub's own rows and are only stripped. Removing a flash-tagged element once
+deleted the diff row with it.
 
 ## Extension Implementation
 
 Two roles in the extension:
 
-1. **Presentation handler.** Listens for `presentation_call` frames on the active WS. Looks up the tool name in a registry, validates the input shape, executes via the underlying UIController-style functions, replies with `presentation_result`.
+1. **Presentation handler.** Listens for `presentation_call` frames on the active WS. Looks up the tool name in a registry, validates the input shape, executes via the handler functions in `utils/presentation/handlers.ts`, replies with `presentation_result`.
 
-2. **Effect bookkeeping.** Tracks every effect by `(turn_id, effect_id)`. Renders the Q&A panel's "X effects applied · [Clear]" footer. Implements the auto-clear logic on new-question / panel-close / nav.
+2. **Effect bookkeeping.** Tracks every effect by `effect_id` and tool (per-turn keying is intended, not built — see § Result envelope). Renders the Q&A panel's "X effects applied · [Clear]" footer. Implements the auto-clear logic on new-question / panel-close / nav.
 
-The underlying highlight/annotate/scroll implementations are the POC's `UIController` code, minus the tool-callable wrapper. The POC code stays in place; what changes is who calls it (the extension itself, via the presentation handler, in response to daemon frames).
+The highlight/annotate/scroll implementations descend from the POC's UI-controller code, rewritten rather than kept verbatim — no `UIController` type survives in the tree. What changed is who calls them: the extension itself, via the presentation handler, in response to daemon frames.
 
 ## Daemon Implementation
 
 Tool router gains a third dispatcher:
 
 ```rust
+// Illustrative. The shipped router classifies a call by name into
+// `enum Category { Internal, CodeDaemon, Presentation, Unknown }` and
+// dispatches accordingly; of the types named below only
+// `PresentationDispatcher` exists.
 enum ToolBackend {
     CodeDaemon(McpClient),               // dispatch via MCP child
     Internal(InternalToolFn),            // call Rust fn directly
@@ -200,7 +234,7 @@ The base prompt is appended after this guidance with verb-specific addenda. So e
 
 - `find_callers`: a closing instruction to call `highlight_lines` on each cited call site (max ~5), so the reviewer can flip through them.
 - `show_history`: no presentation calls by default — history is a temporal narrative, not a spatial one.
-- `related_tests`: scroll to the first cited test file at the end (so the reviewer lands somewhere useful), `annotate_line` only if there's a specific concern.
+- `related_tests`: *not implemented as a hint* — this verb's prompt carries no scroll or annotate instruction, and `annotate_line` appears in no verb's suggested tools. The other four hints below are in the shipped prompts.
 - `compare_to_base`: `highlight_lines` on the diff hunks where the change happened, if the reviewer benefits.
 - `explain`: `scroll_to` the lines being explained at the start; `highlight_lines` lightly on the range under discussion.
 
@@ -217,6 +251,26 @@ These are *hints*, not enforcement. The LLM still decides. If a verb produces a 
 ```
 
 A footer that shows what's currently applied and offers a single Clear button.
+
+### The guided tour
+
+The model fires its highlights while the answer is still streaming, so the
+reviewer would otherwise only ever see the end state. Every successful
+presentation call is recorded as a *step*, and the panel offers a tour widget
+over them: Prev / Next, a step counter, the step's `label` and `detail` beside
+the code, and "Show all".
+
+**Scrolling only ever follows a reviewer action.** A live `scroll_to` is
+recorded but does not move the viewport; only stepping through the tour or
+replaying does. An answer that yanks the page around while the reviewer is
+still reading the previous sentence is worse than no navigation at all. The
+widget opens *armed* on the first presentation call of a turn — showing
+"Scroll to first highlight" and waiting for a click — and opens in normal mode
+when the reviewer opens it themselves from the panel.
+
+This replaced a timed replay that paced steps automatically. The pacing was
+never right: too fast to read, too slow to skim, and moving the page without
+being asked.
 
 ### Settings (extension options page)
 

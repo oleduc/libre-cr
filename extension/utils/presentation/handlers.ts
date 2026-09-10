@@ -8,6 +8,7 @@ import {
   ensureFileRendered,
   fileContainer,
   findRow,
+  findRows,
   scrollIntoViewSettled,
 } from "../github/diff";
 
@@ -16,7 +17,7 @@ export type PresentationSeverity = "info" | "suggestion" | "warning" | "critical
 export type PresentationScope = "all" | "highlights" | "annotations";
 
 export type PresentationResult =
-  | { ok: true; effect_id: string }
+  | { ok: true; effect_id: string; note?: string }
   | { ok: false; error: string; message?: string };
 
 export interface PresentationContext {
@@ -40,6 +41,15 @@ export function makeContext(overrides: Partial<PresentationContext> = {}): Prese
     ...overrides,
   };
 }
+
+/**
+ * Most lines one `highlight_lines` call may paint. A caption is meant to mark
+ * the specific lines an answer talks about; a model asking for a whole class
+ * (a 479-line span crashed a tab during manual testing) gets the head of the
+ * range and is told it was clamped, rather than the page being frozen while
+ * hundreds of rows are mutated under React.
+ */
+export const MAX_HIGHLIGHT_LINES = 80;
 
 const VALID_COLORS: PresentationColor[] = ["red", "yellow", "green", "blue", "purple"];
 const VALID_SEVERITIES: PresentationSeverity[] = [
@@ -76,14 +86,19 @@ export function highlightLines(
     return { ok: false, error: "validation_failed", message: "missing file/start_line" };
   }
   const start = input.start_line;
-  const end = input.end_line ?? input.start_line;
+  const requestedEnd = Math.max(input.end_line ?? input.start_line, start);
+  const end = Math.min(requestedEnd, start + MAX_HIGHLIGHT_LINES - 1);
+  const clamped = end < requestedEnd;
   const color: PresentationColor = VALID_COLORS.includes(input.color as PresentationColor)
     ? (input.color as PresentationColor)
     : "blue";
   const effectId = ctx.nextEffectId();
   let applied = 0;
+  // One DOM scan for the whole range (see findRows): the per-line lookup this
+  // replaces was what made a wide highlight freeze the page.
+  const rows = findRows(input.file, start, end, ctx.root);
   for (let l = start; l <= end; l++) {
-    const row = findRow(input.file, l, ctx.root);
+    const row = rows.get(l);
     if (!row) continue;
     // Attributes, not classes: GitHub's React rewrites `className` on hover /
     // selection re-renders and would wipe a class; unknown `data-*` survive.
@@ -109,6 +124,15 @@ export function highlightLines(
   }
   if (applied === 0) {
     return { ok: false, error: "file_not_in_view", message: `no rows for ${input.file}:${start}` };
+  }
+  if (clamped) {
+    return {
+      ok: true,
+      effect_id: effectId,
+      note:
+        `range clamped to ${start}-${end} (${MAX_HIGHLIGHT_LINES} lines max); ` +
+        "highlight the specific lines you are describing, not a whole class or file",
+    };
   }
   return { ok: true, effect_id: effectId };
 }

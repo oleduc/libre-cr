@@ -166,6 +166,28 @@ pub struct Limits {
     pub max_tool_turns: u32,
     pub max_history_messages: u32,
     pub session_idle_evict_days: u32,
+    // The context caps below bound what reaches the model. Every one is
+    // editable from the extension's options page (`POST /v1/config`), because
+    // the right value depends on the model's context window: measured on one
+    // PR, a single `get_pr_diff` without `paths` returned 589,499 chars
+    // (~168k tokens) — over half of a 262k-token window in one tool result.
+    /// Max chars of one live tool result handed to the model. Exceeding it
+    /// truncates the result and tells the model to narrow its request; the
+    /// turn still completes.
+    pub max_tool_result_chars: usize,
+    /// Max total chars of live tool output for one turn, across every round.
+    /// The per-result cap alone still permits `max_tool_turns` × that cap.
+    pub max_turn_tool_chars: usize,
+    /// How many of the most recent history turns replay their tool results
+    /// verbatim. Older turns replay a stub naming the tools they used.
+    pub replay_full_turns: usize,
+    /// Ceiling on full-fidelity history turns per ask, however many the panel
+    /// has expanded; oldest are demoted to stubs first.
+    pub replay_max_full_turns: usize,
+    /// Per-result cap when replaying a history turn's tool output.
+    pub replay_result_chars: usize,
+    /// Per-turn cap when replaying a history turn's tool output.
+    pub replay_turn_chars: usize,
 }
 
 impl Default for Limits {
@@ -174,6 +196,12 @@ impl Default for Limits {
             max_tool_turns: 25,
             max_history_messages: 30,
             session_idle_evict_days: 90,
+            max_tool_result_chars: 20_000,
+            max_turn_tool_chars: 120_000,
+            replay_full_turns: 2,
+            replay_max_full_turns: 5,
+            replay_result_chars: 20_000,
+            replay_turn_chars: 40_000,
         }
     }
 }

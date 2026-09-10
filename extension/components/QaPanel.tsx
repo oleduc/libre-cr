@@ -265,7 +265,9 @@ export function QaPanel(props: QaPanelProps) {
             return {
               ...t,
               thinking: (t.thinking ?? []).map((tt) =>
-                tt.call_id === f.call_id ? { ...tt, preview } : tt,
+                tt.call_id === f.call_id
+                  ? { ...tt, preview, truncatedFrom: f.truncated_from }
+                  : tt,
               ),
             };
           }),

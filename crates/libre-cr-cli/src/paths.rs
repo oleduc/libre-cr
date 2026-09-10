@@ -42,9 +42,19 @@ pub fn run_dir() -> PathBuf {
     state_dir().join("run")
 }
 
-/// `~/.local/state/libre-cr/run/review.pid`
+/// `~/.local/state/libre-cr/run/review.pid` — the *supervised child*, whose
+/// PID changes on every restart. Diagnostics and orphan cleanup only; to act
+/// on the install, use [`supervisor_pid_file`].
 pub fn pid_file() -> PathBuf {
     run_dir().join("review.pid")
+}
+
+/// `~/.local/state/libre-cr/run/supervisor.pid` — the `libre-cr start`
+/// process. This is what "is libre-cr running?" means, and what `stop` must
+/// signal: the review daemon is a child inside a restart loop, so stopping it
+/// directly just makes the supervisor spawn a replacement.
+pub fn supervisor_pid_file() -> PathBuf {
+    run_dir().join("supervisor.pid")
 }
 
 /// `~/.config/libre-cr/endpoint`

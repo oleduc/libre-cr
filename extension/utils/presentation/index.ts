@@ -122,7 +122,12 @@ export function createPresentationManager(
       }
       // Live effects land silently: every scroll is reviewer-initiated (the
       // tour widget opens armed on the first call and waits for a click).
-      session.sendPresentationResult(call_id, true, { effect_id: outcome.effect_id });
+      session.sendPresentationResult(call_id, true, {
+        effect_id: outcome.effect_id,
+        // A clamped range must reach the model, or it keeps asking for spans
+        // that used to freeze the page.
+        ...(outcome.note ? { note: outcome.note } : {}),
+      });
     } else {
       session.sendPresentationResult(call_id, false, undefined, outcome.error, outcome.message);
     }

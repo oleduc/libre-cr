@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use libre_cr_cli::commands::{start, stop};
 use libre_cr_cli::supervisor::{RestartPolicy, SpawnSpec, Supervisor, SupervisorOutcome};
 use libre_cr_cli::{paths, proc};
 
@@ -169,4 +170,155 @@ async fn supervisor_runs_a_fake_review_daemon_and_publishes_endpoint() {
         !pid_path.exists(),
         "pid file should be cleaned up on shutdown"
     );
+}
+
+// --- stop/start lifecycle -------------------------------------------------
+//
+// `stop` used to signal the PID in `review.pid`, which is the supervised
+// *child*: the supervisor promptly restarted it on a fresh port and the next
+// `start` reported "already running". `start` read the same file, so a daemon
+// that outlived its supervisor also read as healthy. Both act on the
+// supervisor's own pid file now.
+//
+// These drive the path-taking entry points, so they need no `$HOME` and are
+// safe to run in parallel with the tests that re-point it.
+
+/// A long-lived child standing in for a daemon. `sleep` exits on SIGTERM, so
+/// it also proves the soft signal is the one that landed.
+#[cfg(unix)]
+fn spawn_sleeper() -> std::process::Child {
+    std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn sleep")
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_targets_the_supervisor_and_reaps_the_child_it_left_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let supervisor_pid_file = dir.path().join("supervisor.pid");
+    let review_pid_file = dir.path().join("review.pid");
+    let mut supervisor = spawn_sleeper();
+    let mut review = spawn_sleeper();
+    let (supervisor_pid, review_pid) = (supervisor.id(), review.id());
+    proc::write_pid_file(&supervisor_pid_file, supervisor_pid).unwrap();
+    proc::write_pid_file(&review_pid_file, review_pid).unwrap();
+
+    stop::stop_files(
+        &supervisor_pid_file,
+        &review_pid_file,
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+
+    // Reap, so `is_alive` isn't reading a zombie of our own making.
+    let _ = supervisor.wait();
+    let _ = review.wait();
+    assert!(
+        !proc::is_alive(supervisor_pid),
+        "supervisor should be stopped"
+    );
+    // A stand-in supervisor cannot clean up after itself, so `stop` must:
+    // otherwise the daemon keeps the port and blocks the next start.
+    assert!(
+        !proc::is_alive(review_pid),
+        "left-behind daemon should be stopped"
+    );
+    assert!(proc::read_pid_file(&supervisor_pid_file).unwrap().is_none());
+    assert!(proc::read_pid_file(&review_pid_file).unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_reaps_an_unsupervised_daemon_when_no_supervisor_is_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let supervisor_pid_file = dir.path().join("supervisor.pid");
+    let review_pid_file = dir.path().join("review.pid");
+    let mut review = spawn_sleeper();
+    let review_pid = review.id();
+    proc::write_pid_file(&review_pid_file, review_pid).unwrap();
+
+    stop::stop_files(
+        &supervisor_pid_file,
+        &review_pid_file,
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+
+    let _ = review.wait();
+    assert!(!proc::is_alive(review_pid));
+    assert!(proc::read_pid_file(&review_pid_file).unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_with_nothing_alive_clears_stale_pid_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let supervisor_pid_file = dir.path().join("supervisor.pid");
+    let review_pid_file = dir.path().join("review.pid");
+    proc::write_pid_file(&supervisor_pid_file, 0x7fff_fff0).unwrap();
+    proc::write_pid_file(&review_pid_file, 0x7fff_fff1).unwrap();
+
+    stop::stop_files(
+        &supervisor_pid_file,
+        &review_pid_file,
+        Duration::from_millis(200),
+    )
+    .await
+    .unwrap();
+
+    assert!(proc::read_pid_file(&supervisor_pid_file).unwrap().is_none());
+    assert!(proc::read_pid_file(&review_pid_file).unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn start_treats_a_live_supervisor_as_already_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let supervisor_pid_file = dir.path().join("supervisor.pid");
+    let review_pid_file = dir.path().join("review.pid");
+    // This test process is unquestionably alive, so it stands in for a live
+    // supervisor.
+    let me = std::process::id();
+    proc::write_pid_file(&supervisor_pid_file, me).unwrap();
+
+    let existing = start::resolve_existing(&supervisor_pid_file, &review_pid_file)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        existing,
+        Some(me),
+        "a live supervisor means already running"
+    );
+    assert_eq!(proc::read_pid_file(&supervisor_pid_file).unwrap(), Some(me));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn start_clears_an_orphaned_daemon_instead_of_calling_it_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let supervisor_pid_file = dir.path().join("supervisor.pid");
+    let review_pid_file = dir.path().join("review.pid");
+    // Dead supervisor, live daemon: the state a SIGKILLed wrapper leaves.
+    proc::write_pid_file(&supervisor_pid_file, 0x7fff_fff0).unwrap();
+    let mut review = spawn_sleeper();
+    let review_pid = review.id();
+    proc::write_pid_file(&review_pid_file, review_pid).unwrap();
+
+    let existing = start::resolve_existing(&supervisor_pid_file, &review_pid_file)
+        .await
+        .unwrap();
+
+    let _ = review.wait();
+    assert_eq!(existing, None, "an orphan is not a running install");
+    assert!(
+        !proc::is_alive(review_pid),
+        "the orphan holds the port, so start must clear it"
+    );
+    assert!(proc::read_pid_file(&supervisor_pid_file).unwrap().is_none());
+    assert!(proc::read_pid_file(&review_pid_file).unwrap().is_none());
 }

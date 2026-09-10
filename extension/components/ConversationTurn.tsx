@@ -6,6 +6,9 @@ export interface ToolTraceLite {
   call_id: string;
   name: string;
   preview?: string;
+  /** Set when the daemon shortened this result to fit the context caps;
+   *  carries the original char count. */
+  truncatedFrom?: number;
 }
 
 export type NoteSeverity = "info" | "suggestion" | "warning" | "critical";
@@ -184,6 +187,11 @@ export function ConversationTurn({
     );
   }
 
+  // Truncated tool results mean the model answered from less than it asked
+  // for, so the reviewer has to be told rather than left guessing.
+  const truncated = (turn.thinking ?? []).filter((t) => typeof t.truncatedFrom === "number");
+  const largestTruncation = truncated.reduce((max, t) => Math.max(max, t.truncatedFrom ?? 0), 0);
+
   // QA turn
   if (collapsedQa) {
     return (
@@ -211,6 +219,15 @@ export function ConversationTurn({
         <div className="a">{turn.pending ? "…" : ""}</div>
       )}
       {turn.error ? <div className="libre-cr-error">{turn.error}</div> : null}
+      {truncated.length > 0 ? (
+        <div className="libre-cr-notice" data-testid="truncation-notice">
+          ⚠ {truncated.length} tool result{truncated.length === 1 ? "" : "s"} hit the context
+          limits and {truncated.length === 1 ? "was" : "were"} shortened
+          {largestTruncation ? ` (largest: ${largestTruncation.toLocaleString()} chars)` : ""} —
+          this answer may be missing detail. Raise the caps in the extension's Options, under
+          Context limits.
+        </div>
+      ) : null}
       {turn.thinking && turn.thinking.length > 0 ? (
         <details
           className="libre-cr-thinking"
@@ -226,6 +243,12 @@ export function ConversationTurn({
               <li key={t.call_id}>
                 <code>{t.name}</code>
                 {t.preview ? ` — ${t.preview.slice(0, 80)}` : ""}
+                {typeof t.truncatedFrom === "number" ? (
+                  <span className="libre-cr-trunc" title="Shortened to fit the context limits">
+                    {" "}
+                    ⚠ truncated from {t.truncatedFrom.toLocaleString()} chars
+                  </span>
+                ) : null}
               </li>
             ))}
           </ul>

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  MAX_HIGHLIGHT_LINES,
   annotateLine,
   clearPresentation,
   highlightLines,
@@ -100,5 +101,47 @@ describe("presentation handlers", () => {
     expect(document.querySelectorAll("[data-libre-cr-effect-id]").length).toBe(2);
     clearPresentation(ctx, "all");
     expect(document.querySelectorAll("[data-libre-cr-effect-id]").length).toBe(0);
+  });
+});
+
+/** A file with `lines` rendered rows, to exercise a wide highlight range. */
+function bigFixture(lines: number): string {
+  const rows = Array.from(
+    { length: lines },
+    (_, i) =>
+      `<tr><td class="blob-num" data-line-number="${i + 1}"></td>` +
+      `<td class="blob-code">line ${i + 1}</td></tr>`,
+  ).join("");
+  return `<div class="file" data-tagsearch-path="big.py"><table>${rows}</table></div>`;
+}
+
+describe("highlight_lines range cap", () => {
+  beforeEach(() => {
+    document.body.innerHTML = bigFixture(600);
+  });
+
+  it("clamps a sweeping range and says so, instead of painting every row", () => {
+    const ctx = makeContext();
+    // The span that crashed a tab during manual testing.
+    const r = highlightLines(ctx, { file: "big.py", start_line: 136, end_line: 614 });
+    expect(r.ok).toBe(true);
+    const tagged = document.querySelectorAll("[data-libre-cr-effect-id]");
+    expect(tagged.length).toBe(MAX_HIGHLIGHT_LINES);
+    if (r.ok) expect(r.note).toMatch(/clamped to 136-215/);
+  });
+
+  it("leaves a range inside the cap untouched and unremarked", () => {
+    const ctx = makeContext();
+    const r = highlightLines(ctx, { file: "big.py", start_line: 10, end_line: 19 });
+    expect(r.ok).toBe(true);
+    expect(document.querySelectorAll("[data-libre-cr-effect-id]").length).toBe(10);
+    if (r.ok) expect(r.note).toBeUndefined();
+  });
+
+  it("an inverted range still marks the start line", () => {
+    const ctx = makeContext();
+    const r = highlightLines(ctx, { file: "big.py", start_line: 20, end_line: 5 });
+    expect(r.ok).toBe(true);
+    expect(document.querySelectorAll("[data-libre-cr-effect-id]").length).toBe(1);
   });
 });

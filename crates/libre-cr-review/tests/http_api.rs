@@ -147,6 +147,24 @@ async fn config_ui_serves_html() {
         body.contains("/v1/provider/detected"),
         "page must reference the detected credentials API"
     );
+    // The context caps are edited here, not in the extension: the daemon
+    // enforces them and has to keep them without the extension installed.
+    assert!(
+        body.contains("Context limits"),
+        "page must offer the context-limit settings"
+    );
+    for cap in [
+        "max_tool_result_chars",
+        "max_turn_tool_chars",
+        "max_tool_turns",
+        "max_history_messages",
+        "replay_full_turns",
+        "replay_max_full_turns",
+        "replay_result_chars",
+        "replay_turn_chars",
+    ] {
+        assert!(body.contains(cap), "page must expose the {cap} input");
+    }
 }
 
 #[tokio::test]
@@ -413,4 +431,72 @@ async fn pair_redeem_rate_limited_after_five_failures() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert_eq!(retry_after, "60");
+}
+
+#[tokio::test]
+async fn config_limits_round_trip_and_reject_out_of_range() {
+    // The context caps are edited from the extension's options page, so the
+    // wire path has to work: GET returns them, POST persists a partial patch,
+    // and a nonsense value is refused rather than silently stored (a zero
+    // char cap would hand the model empty tool results).
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+
+    let before: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(before["limits"]["max_tool_result_chars"], 20_000);
+    assert_eq!(before["limits"]["replay_turn_chars"], 40_000);
+
+    // A partial patch leaves the caps it does not mention alone.
+    let resp = c
+        .post(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .json(&json!({"limits": {"max_tool_result_chars": 50_000}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "status {}", resp.status());
+
+    let after: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["limits"]["max_tool_result_chars"], 50_000);
+    assert_eq!(
+        after["limits"]["replay_turn_chars"], 40_000,
+        "an unmentioned cap must survive the patch"
+    );
+
+    // Out of range is a 400, and nothing changes.
+    let resp = c
+        .post(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .json(&json!({"limits": {"max_tool_result_chars": 0}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "a zero cap must be refused");
+
+    let still: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(still["limits"]["max_tool_result_chars"], 50_000);
 }

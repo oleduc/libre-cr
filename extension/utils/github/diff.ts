@@ -206,6 +206,40 @@ export async function scrollIntoViewSettled(
   }
 }
 
+/**
+ * The `<tr>`s for every line in `start..=end`, as a line → row map.
+ *
+ * One container resolve and one scan for the whole range: calling `findRow`
+ * per line re-ran a document-wide `querySelectorAll` (plus an `Array.from`
+ * and a `filePathOf` map) for every line, so a wide highlight was O(range ×
+ * document) synchronous DOM work — enough to hang or kill the tab on a large
+ * PR. Lines with no rendered row are simply absent from the map.
+ */
+export function findRows(
+  file: string,
+  start: number,
+  end: number,
+  root: ParentNode = globalThis.document,
+): Map<number, HTMLTableRowElement> {
+  const out = new Map<number, HTMLTableRowElement>();
+  const fileEl = fileContainer(file, root);
+  if (!fileEl) return out;
+  for (const cell of Array.from(
+    fileEl.querySelectorAll<HTMLTableCellElement>("td[data-line-number]"),
+  )) {
+    if (!cell.matches(NUM_CELL_SEL)) continue;
+    const line = Number(cell.getAttribute("data-line-number"));
+    if (!Number.isFinite(line) || line < start || line > end) continue;
+    const row = cell.closest("tr");
+    if (!row) continue;
+    // Prefer the right/new side when both sides carry the number (context rows).
+    const existing = out.get(line);
+    if (existing && sideOf(cell) !== "R") continue;
+    out.set(line, row);
+  }
+  return out;
+}
+
 /** Locate the `<tr>` for a given (file, line) — for highlight overlay. */
 export function findRow(
   file: string,

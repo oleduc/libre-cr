@@ -2,6 +2,16 @@
 
 ## What Ships
 
+> **Status: no packaging artifact exists in this repository** — no formula,
+> no `install.sh`, no service unit, no Scoop manifest. `release.yml` labels
+> itself a Phase 0 stub and defers codesigning, notarization, Authenticode,
+> GPG and formula bumps to Phase 7. Everything in this section and in
+> § Install Paths, § Updates and § Build And Release Pipeline is the intended
+> distribution story; today the binaries are built with `cargo build
+> --release` and run from the checkout (a `direnv` `PATH_add target/release`
+> is the working setup). Marked future rather than dropped: `plan.md` Phase 7
+> carries it.
+
 | Artifact | Form | Where |
 |---|---|---|
 | `libre-cr-code` | Single static binary, per OS+arch | GitHub Releases + Homebrew + Scoop |
@@ -23,7 +33,7 @@ Three artifacts the user installs: the extension (browser-side) and the wrapper 
 
 This lets the user think about *one* thing ("the libre-cr service") rather than *two daemons* and their inter-process plumbing.
 
-The wrapper is ~500 lines of Rust that calls into the same crate the daemons are built from, plus a process supervisor.
+The wrapper is ~2,000 lines of Rust. It does **not** link the daemon crates — it depends on `libre-cr-common` only and spawns `libre-cr-review` by name from `PATH`, which is why a stale copy earlier on `PATH` silently shadows a fresh build.
 
 ## Install Paths
 
@@ -73,16 +83,15 @@ Standard Web Store / Add-ons install. The extension is independent of the binari
 ```
 $ libre-cr start
 libre-cr v0.1.0
-  ✓ libre-cr-review started (PID 4012) on http://127.0.0.1:7841
+  ✓ libre-cr-review started (PID 4012) on http://127.0.0.1:54321
   ✓ libre-cr-code  started (PID 4013) via stdio
   ✓ token written to ~/.config/libre-cr/token (mode 0600)
   ✓ endpoint written to ~/.config/libre-cr/endpoint
 
 To pair the browser extension:
-  1. Open a GitHub PR in your browser.
-  2. Click the libre-cr icon or open the extension's options page.
-  3. Click "Pair with daemon".
-  4. Run `libre-cr pair` and paste the code that appears.
+  1. Run `libre-cr pair` — it mints a one-time code through the running daemon.
+  2. Open the extension's options page.
+  3. Click "Pair with daemon" and enter that code.
 
 Logs:    ~/.local/state/libre-cr/log/
 Config:  ~/.config/libre-cr/
@@ -94,15 +103,17 @@ The pairing dance described in `04-review-daemon.md` and `05-browser-extension.m
 
 ## Wrapper CLI Surface
 
+The port shown is illustrative: the default is an **ephemeral** port (`port = 0`), so it differs per run unless `[server] port` is pinned. The endpoint file is the authority, and `start` removes any stale one before spawning so the banner cannot report a dead port.
+
 ```
-libre-cr start [--autostart]      Start both daemons (idempotent)
+libre-cr start [--autostart]      Start both daemons (idempotent); --autostart only prints a notice today
 libre-cr stop                     Stop both daemons gracefully
 libre-cr restart
 libre-cr status                   Show health, version, ports, PIDs
 libre-cr logs [-f]                Tail both daemons' logs
 libre-cr pair                     Issue a pairing code through the running daemon (POST /v1/pair/issue)
 libre-cr config                   Open the review daemon's config UI (<endpoint>/config-ui?token=…)
-libre-cr doctor                   Diagnose: ports, file perms, code-daemon health
+libre-cr doctor                   Diagnose: git, binaries on PATH, file perms, endpoint format
 libre-cr update                   Check for updates; apply if user confirms
 libre-cr version
 libre-cr uninstall                Stop daemons, prompt before removing data
@@ -119,10 +130,34 @@ Two layers of supervision because the user-facing process (`libre-cr-review`) ca
 
 `libre-cr start` runs the supervisor **in the foreground** — it does not daemonize itself. After printing the first-run summary it holds the terminal, supervising the review daemon and honoring `SIGTERM`/`SIGINT` for graceful shutdown. Turning it into a background service is the platform service manager's job: `brew services` (macOS), `systemd --user` (Linux), or Task Scheduler (Windows). Double-forking ourselves is fragile across platforms and intentionally avoided.
 
+**Two pid files, and only one of them is the install.** The supervisor records
+the review daemon's pid in `run/review.pid` — that pid changes on every
+restart. It records *itself* in `run/supervisor.pid`, and that is what "is
+libre-cr running?" means:
+
+- `libre-cr stop` signals the **supervisor**. Its own `SIGTERM` handler stops
+  the daemon gracefully and leaves the restart loop. Signalling the daemon
+  directly only makes the supervisor spawn a replacement ~250 ms later, on a
+  fresh port, after which `start` reports "already running".
+- `stop` then reaps a daemon that outlived its supervisor, and `start` clears
+  such an orphan before binding. A force-killed wrapper cannot stop its child,
+  so the daemon can survive holding the port — which `start` used to read as a
+  healthy install and refuse to replace.
+- `status` reports the two separately and flags `running unsupervised` when it
+  sees an orphan.
+
+Escalation is uniform: `SIGTERM`, wait, then `SIGKILL`.
+
 Logs go to `~/.local/state/libre-cr/log/`:
-- `libre-cr-review.log` (rolling, daily, 14 days retained)
-- `libre-cr-code.log` (same)
-- `supervisor.log` (start/stop events, restart counts)
+- `libre-cr-review.log` — the supervisor's append-only capture of the daemon's stderr
+- `libre-cr-code.log` — same, for the code daemon
+- `supervisor.log` — start/stop events, restart counts
+
+**No rotation and no retention window.** The daemons log to stderr only; the
+supervisor appends that stream to these files and never truncates them, so
+they grow unbounded. Not planned: for a local single-user tool, `libre-cr logs`
+plus manual deletion is the accepted answer. (`[logging] file` in `code.toml`
+is accepted and ignored.)
 
 ## Configuration Layout
 
@@ -144,9 +179,37 @@ Logs go to `~/.local/state/libre-cr/log/`:
 ~/.local/state/libre-cr/log/    # Logs
 ```
 
-These follow the XDG Base Directory spec on Linux/macOS and equivalent locations on Windows (`%APPDATA%`, `%LOCALAPPDATA%`).
+```text
+~/.local/state/libre-cr/run/
+├── supervisor.pid              # the `libre-cr start` process — the install
+└── review.pid                  # the supervised child (changes per restart)
+```
+
+`review.toml` also names an `install_key` file (`~/.config/libre-cr/install_key`), which the daemon creates and needs in order to decrypt the stored provider key.
+
+These follow the XDG Base Directory spec on Linux and macOS. **Windows is not special-cased today:** the path helpers are `$XDG_*`-or-`$HOME` on every platform, so a Windows install lands in `%USERPROFILE%\.config\libre-cr` rather than `%APPDATA%`. Intended, not built.
+
+**On macOS the config path is `$XDG_CONFIG_HOME` → `~/.config`, deliberately
+not `dirs::config_dir()`.** That helper returns `~/Library/Application Support`
+on macOS, so the daemons silently ignored the `review.toml`/`code.toml` that
+the wrapper, the docs, and their own token and endpoint files all use — they
+served defaults instead, and every test missed it because the harness passes
+`--config` explicitly. A one-time migration copies a file stranded at the
+Application Support location, and falls back to loading it in place if the copy
+fails rather than defaulting over a readable config.
+
+Config sections parse partially: a `[provider]` block carrying only `kind` fills
+the rest from defaults instead of failing to parse. A hand-written minimal
+config is a supported starting point, and the new `[limits]` caps
+(`10-grounding-and-context.md`) reach existing installs this way without an
+edit.
 
 ## Updates
+
+> **Status: not built.** `libre-cr update` prints "auto-update is not
+> implemented yet" and exits — there is no version check, no signature
+> verification and no binary swap, so nothing phones home either. The design
+> below is Phase 7.5 in `plan.md`.
 
 Phase B is manual:
 
@@ -201,12 +264,16 @@ Phase B ships with the opt-in off and no telemetry server. Adding telemetry is a
 libre-cr uninstall
   This will:
     • Stop the libre-cr daemons.
-    • Remove binaries from /opt/homebrew/bin (etc.).
     • Remove config from ~/.config/libre-cr.
-
-  Keep data (~/.local/share/libre-cr-*)? [Y/n]
-  Keep logs (~/.local/state/libre-cr)?    [Y/n]
+    • Remove ~/.local/share/libre-cr and ~/.local/state/libre-cr.
 ```
+
+Two caveats, both current behaviour rather than intent. It offers one
+all-or-nothing confirmation, not separate keep-data / keep-logs prompts. And
+`~/.local/share/libre-cr` is *not* the `libre-cr-*` glob: the daemons' real
+databases live in `~/.local/share/libre-cr-review/` and
+`~/.local/share/libre-cr-code/`, which **survive uninstall**. It also never
+removes binaries — there is no install step that placed them.
 
 Browser extension is uninstalled through the browser as normal.
 
@@ -251,9 +318,9 @@ Users who want cross-machine continuity can use the (future) GitHub-posted revie
 
 - Signed binaries; checksum-verified downloads.
 - Token written 0600. Endpoint file too.
-- Token is regenerated on `libre-cr restart --rotate-token` (also re-pairs the extension).
+- Token rotation is *intended* via a `libre-cr restart --rotate-token` flag (which would also force a re-pair). **Not built:** `restart` takes no flags and nothing in the tree rotates a token; deleting the token file and restarting is the manual equivalent.
 - Daemon binds 127.0.0.1 only — never `0.0.0.0`. Configurable for advanced uses, but documented as "you are now responsible for network ACLs."
-- Daemon refuses to start with a config file with mode wider than 0644.
+- The daemon **should** refuse to start with a config file whose mode is wider than 0644. **Not enforced:** neither daemon inspects config permissions. Future work; `libre-cr doctor` does check and report the token and endpoint file modes today.
 - `libre-cr doctor` checks file permissions and reports issues.
 
 ## What Distribution Doesn't Do (Phase B)

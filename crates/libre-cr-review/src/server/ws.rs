@@ -14,7 +14,9 @@ use futures::{stream::SplitSink, SinkExt, StreamExt};
 use libre_cr_common::ws_frames::{AskInit, ClientFrame, ServerFrame};
 use tokio::sync::Mutex;
 
-use crate::agent::{persist_cancelled, run_turn, FrameSink, TurnContext, TurnInput};
+use crate::agent::{
+    persist_cancelled, persist_failed, run_turn, FrameSink, TurnContext, TurnInput,
+};
 use crate::error::{Error, Result};
 use crate::tools::code_daemon::CodeDaemonClient;
 use crate::tools::internal::InternalContext;
@@ -201,8 +203,7 @@ async fn handle_ws(state: AppState, session_id: String, ws: WebSocket) -> Result
         provider: state.provider.get().await,
         router,
         store: state.store.clone(),
-        max_tool_turns: cfg.limits.max_tool_turns,
-        max_history_messages: cfg.limits.max_history_messages,
+        limits: cfg.limits.clone(),
         global_instructions: cfg.global_instructions.text.clone(),
     };
 
@@ -265,7 +266,18 @@ async fn handle_ws(state: AppState, session_id: String, ws: WebSocket) -> Result
     // borrow the reader_task JoinHandle so we don't double-spawn it.
     tokio::pin!(agent_fut);
     let outcome = tokio::select! {
-        r = &mut agent_fut => r,
+        r = &mut agent_fut => {
+            if let Err(e) = &r {
+                // A failed turn used to vanish: nothing logged and no row, so
+                // the only evidence was the error frame in the browser.
+                tracing::error!(error = %e, session_id = %session_id, "turn failed");
+                let partial_text = partial.lock().await.clone();
+                if let Err(pe) = persist_failed(&ctx, &cancel_input, partial_text).await {
+                    tracing::warn!(error = %pe, "persist failed turn");
+                }
+            }
+            r
+        }
         _ = &mut reader_task => {
             // Client dropped the connection mid-turn. Persist whatever
             // partial answer we've already streamed so the session history

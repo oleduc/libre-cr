@@ -17,16 +17,12 @@ use crate::{logs, paths, proc, supervisor};
 
 pub async fn run(autostart: bool) -> Result<()> {
     paths::ensure_dirs().context("ensure libre-cr directories")?;
-    let pid_file = paths::pid_file();
+    let supervisor_pid_file = paths::supervisor_pid_file();
+    let review_pid_file = paths::pid_file();
 
-    if let Some(pid) = proc::read_pid_file(&pid_file)? {
-        if proc::is_alive(pid) {
-            println!("libre-cr: already running (PID {pid}).");
-            return Ok(());
-        } else {
-            println!("libre-cr: clearing stale PID file (PID {pid} is dead).");
-            proc::remove_pid_file(&pid_file).ok();
-        }
+    if let Some(pid) = resolve_existing(&supervisor_pid_file, &review_pid_file).await? {
+        println!("libre-cr: already running (supervisor PID {pid}).");
+        return Ok(());
     }
 
     if autostart {
@@ -95,8 +91,14 @@ pub async fn run(autostart: bool) -> Result<()> {
         );
     });
 
-    let outcome = supervisor::Supervisor::new(spec).run(cancel_rx).await?;
+    // Record the supervisor — this process — so `stop`, `status` and a later
+    // `start` all have something truthful to act on. Cleared on every exit
+    // path below, including the error one.
+    proc::write_pid_file(&supervisor_pid_file, std::process::id()).ok();
+    let result = supervisor::Supervisor::new(spec).run(cancel_rx).await;
     watcher.abort();
+    proc::remove_pid_file(&supervisor_pid_file).ok();
+    let outcome = result?;
     match outcome {
         supervisor::SupervisorOutcome::Clean | supervisor::SupervisorOutcome::ShutdownRequested => {
             Ok(())
@@ -108,6 +110,39 @@ pub async fn run(autostart: bool) -> Result<()> {
             )
         }
     }
+}
+
+/// Reconcile the pid files before a start, returning the PID of a supervisor
+/// that is already running (in which case the caller must do nothing).
+///
+/// "Already running" is a question about the *supervisor*, not the daemon it
+/// spawns: the daemon's PID changes on every restart, and one that outlived
+/// its supervisor is not a running install — it is an orphan still holding
+/// the configured port, so the daemon we are about to spawn could not bind.
+/// This used to read `review.pid` and report that orphan as healthy.
+///
+/// Takes the paths so tests need no ambient `$HOME`.
+pub async fn resolve_existing(
+    supervisor_pid_file: &std::path::Path,
+    review_pid_file: &std::path::Path,
+) -> Result<Option<u32>> {
+    if let Some(pid) = proc::read_pid_file(supervisor_pid_file)? {
+        if proc::is_alive(pid) {
+            return Ok(Some(pid));
+        }
+        println!("libre-cr: clearing stale supervisor PID file (PID {pid} is dead).");
+        proc::remove_pid_file(supervisor_pid_file).ok();
+    }
+    if let Some(pid) = proc::read_pid_file(review_pid_file)? {
+        if proc::is_alive(pid) {
+            println!(
+                "libre-cr: stopping unsupervised review daemon from an earlier run (PID {pid})."
+            );
+            proc::terminate_and_wait(pid, Duration::from_secs(5)).await;
+        }
+        proc::remove_pid_file(review_pid_file).ok();
+    }
+    Ok(None)
 }
 
 fn print_first_run_banner() {

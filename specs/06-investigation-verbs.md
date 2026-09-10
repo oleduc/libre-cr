@@ -13,7 +13,6 @@ struct Verb {
     description: &'static str,                // tooltip / help
     required_selection: SelectionRequirement, // symbol, range, file, any
     system_prompt: &'static str,              // appended to the base system prompt
-    output_shape: OutputShape,                // hints the LLM toward a structured response
     suggested_tools: &'static [&'static str], // not enforced; shapes the system prompt's hints
 }
 ```
@@ -47,7 +46,7 @@ The v2 catalog is intentionally short. We ship five verbs, plus the free-form bo
 ### 2. `show_history`
 
 **Label:** Show history
-**Required selection:** range or file
+**Required selection:** range (a symbol selection also satisfies it; a whole-file selection does not)
 **Use:** "When and why was this last changed?"
 
 **System prompt addendum:**
@@ -87,7 +86,7 @@ The v2 catalog is intentionally short. We ship five verbs, plus the free-form bo
 ### 4. `compare_to_base`
 
 **Label:** Compare to base
-**Required selection:** range or file
+**Required selection:** range (a symbol selection also satisfies it; a whole-file selection does not)
 **Use:** "What did this code look like before this PR? What changed and why?"
 
 **System prompt addendum:**
@@ -127,7 +126,18 @@ The unnamed verb. The base system prompt applies; no addendum. All tools are ava
 
 Free-form is the right answer for: novel questions, follow-ups in a conversation, cross-cutting questions ("how does the auth flow work in this repo?"), and meta questions ("what should I be careful about reviewing in this PR?").
 
+The **Output shape** line on each verb above is prose guidance carried in that
+verb's `system_prompt`, not a structured field the daemon enforces — there is
+no `output_shape` on `Verb` and nothing validates the answer's form.
+
 ## Base System Prompt (Applies To All Verbs)
+
+> **Status: illustrative.** The block below is not the shipped prompt text.
+> The real prompt is assembled by `build_system_prompt`, which composes a base
+> section, the worktree/checkout paragraph, the presentation guidance, the
+> verb addendum and any global instructions — in that order. The grounding
+> rules it carries are specified in `10-grounding-and-context.md`. Treat this
+> as the intent; read the code for the wording.
 
 ```
 You are a code review assistant. You help a human reviewer investigate a pull
@@ -195,11 +205,11 @@ enum SelectionRequirement {
 }
 ```
 
-`Symbol` selections are produced by the extension's symbol picker. If the picker fails to resolve (e.g., user clicked in whitespace), the verb is offered with a fallback: "Treat the selected line's first identifier as the symbol — proceed?"
+`Symbol` selections are produced by the extension's identifier picker (a regex over the clicked line, see `05-browser-extension.md` § Selection Model). If it fails to resolve — a click in whitespace — no symbol selection is emitted and symbol-requiring verbs simply stay disabled. The "treat the first identifier as the symbol — proceed?" fallback is intended, not built.
 
 ## Tool Composition Per Verb
 
-Verbs do not enforce which tools are used — that defeats the agent loop's flexibility. But the suggested tools list shapes the system prompt's hints, and (importantly) determines whether the verb is **available** for a given session. If a verb suggests `find_references` and the code daemon is not connected, the verb is disabled with an explanatory tooltip.
+Verbs do not enforce which tools are used — that defeats the agent loop's flexibility. The suggested-tools list shapes the system prompt's hints. It does **not** gate availability: the panel enables or disables a verb purely on whether the current selection satisfies `required_selection`, and nothing consults code-daemon connectivity. A disabled verb shows its ordinary description as its tooltip, not an explanation of what to select — both the connectivity gate and the explanatory tooltip are intended, not built.
 
 | Verb | Hard requirements | Suggested tools |
 |---|---|---|
@@ -215,7 +225,7 @@ The presentation tools (`highlight_lines`, `annotate_line`, `scroll_to`, `open_l
 
 New verbs in phase B are a code change in the review daemon:
 
-1. Add a `Verb` struct entry in `verbs.rs`.
+1. Add a `Verb` struct entry in `verbs/mod.rs`.
 2. Write the system prompt addendum. Tune against a real PR before merging.
 3. Add to the catalog list returned by `GET /v1/verbs` (so the extension renders the button).
 4. Add tests: at minimum, a snapshot test of the assembled system prompt + sample interaction (against a recorded LLM response or a deterministic mock).
@@ -263,4 +273,4 @@ When a verb's answer turn appears in the conversation, it's labeled with the ver
               A: 4 production references, 2 in tests…
 ```
 
-This makes the conversation log readable as a history of investigation, not just a transcript. Export (see `07-conversation-and-notes.md`) uses verb labels as section headers.
+This makes the conversation log readable as a history of investigation, not just a transcript. Export (see `07-conversation-and-notes.md`) does **not** use verb labels as headers — it groups notes by severity and renders each investigation under its own question text. The turn's `verb` is stored but never read by the exporter.

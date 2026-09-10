@@ -17,11 +17,11 @@ If `libre-cr-code` is "an MCP server for any repo," `libre-cr-review` is "the as
   4. Spawn child `libre-cr-code` as MCP-over-stdio (or connect to configured external instance).
   5. Bind HTTP listener on configured `127.0.0.1:<port>`. Default: ephemeral port; resolved port written to `~/.config/libre-cr/endpoint` for the extension to read.
   6. If MCP server is enabled, set up stdio/SSE MCP handlers.
-- On shutdown: drain in-flight requests, gracefully close MCP child, flush SQLite.
+- On shutdown: drain in-flight requests, gracefully close MCP child, flush SQLite. **Not built** — the daemon installs no signal handler, so `run_serve` simply awaits the server task and a `SIGTERM` ends the process abruptly. Per-connection cancellation *is* implemented (a client disconnect persists the partial turn); what is missing is process-level draining. Future work — the supervisor's graceful stop gives the daemon 5 s before `SIGKILL`, which it currently spends doing nothing.
 
 ## HTTP / WebSocket API (Extension Transport)
 
-All endpoints except `POST /v1/pair` (code redemption — how the extension obtains a token; rate-limited) and `GET /v1/health` require `Authorization: Bearer <token>`. CORS is permissive (`*`): the bearer token is the security boundary, and a content script's requests carry the page origin (`https://github.com`), not the extension's, so an origin allowlist cannot work. All responses are JSON unless noted.
+All endpoints except `POST /v1/pair` (code redemption — how the extension obtains a token; rate-limited), `GET /v1/health` and `GET /config-ui` (the static page; the JSON calls it makes are authenticated with the token from its own query string) require `Authorization: Bearer <token>`. CORS is permissive (`*`): the bearer token is the security boundary, and a content script's requests carry the page origin (`https://github.com`), not the extension's, so an origin allowlist cannot work. All responses are JSON unless noted.
 
 ### Sessions
 
@@ -46,14 +46,16 @@ A **session** corresponds 1:1 with a PR (identified by `pr_url`). It holds the c
 - **`WS /v1/sessions/:id/ask`**
   WebSocket upgrade. The client opens it once per Q&A turn (not per session — a fresh socket per question keeps state simple and lets either side disconnect cleanly).
 
-  Client → server (first frame): `{ question: string, selection?: Selection, verb?: string, mute_presentations?: bool }`
+  Client → server (first frame): `{ question: string, selection?: Selection, verb?: string, mute_presentations?: bool, context_turn_ids?: string[] }`
+
+  A `Selection` carries the selected code's `text` alongside its coordinates, so the model never has to count lines to find what the reviewer pointed at. A fourth variant, `kind: "comment"`, carries a GitHub review thread — its comments, and the file, line and diff side it annotates (specified, not built; see `05-browser-extension.md` § Review-comment selection). `context_turn_ids` names earlier turns of this session whose tool results should be replayed in full — the panel sends the ones the reviewer has left expanded. Ids that do not belong to the session are ignored. Both are specified in `10-grounding-and-context.md`.
 
   When `mute_presentations` is `true` the daemon does not register the presentation tools for that turn at all, so the model cannot emit `presentation_call` frames — the mute toggle genuinely suppresses presentations rather than relying on the extension to ignore them. The extension also gates locally as defense in depth: while muted it answers any stray `presentation_call` with `{ ok: false, error: "presentation_muted" }`.
 
   Server → client frames:
   ```
   { type: "tool_call",          name, input, call_id }
-  { type: "tool_result",        call_id, result_preview }
+  { type: "tool_result",        call_id, result_preview, truncated_from? }
   { type: "text_delta",         text }
   { type: "presentation_call",  call_id, tool, input }     ← needs client reply
   { type: "done",               turn_id, usage: { input_tokens, output_tokens } }
@@ -71,6 +73,8 @@ A **session** corresponds 1:1 with a PR (identified by `pr_url`). It holds the c
   `09-presentation-tools.md`.
 
   The `tool_call` / `tool_result` frames are visible to the UI so the panel can show a "thinking trace" the user can expand. This is intentional — reviewers want to know what the agent looked at before trusting the answer.
+
+  `truncated_from` is present only when a tool result was too large to hand the model whole; it carries the original size in characters so the panel can say so rather than presenting a shortened answer as complete. The turn always completes — see `10-grounding-and-context.md` § The context budget.
 
   Cancellation: the client closes the socket. The server aborts the in-flight LLM call and any pending tool dispatches, but persists the partial turn (with status `cancelled`) so it remains in conversation history.
 
@@ -118,6 +122,14 @@ A **session** corresponds 1:1 with a PR (identified by `pr_url`). It holds the c
 - **`GET /config-ui`** — a self-contained static HTML configuration page (no templating). It reads its bearer token from `?token=` and posts to `/v1/config`, fetches `/v1/provider/models` and `/v1/provider/detected`. See § Configuration UI below.
 
 ## MCP Server Surface (External Clients)
+
+> **Status: not built.** `libre-cr-review mcp-stdio` prints "not implemented
+> (Phase 4)" and exits; there is no `/mcp` route on the HTTP listener, and none
+> of the four tools below exists. `[mcp_server]` in `review.toml` is accepted
+> and echoed back by `GET /v1/config` but read by nothing — accepted-but-ignored
+> config, which is its own footgun. Kept as intended behaviour: this surface is
+> the stated reason the agent loop is worth having outside the extension, and
+> it is where a local-CLI-as-agent integration would attach.
 
 Exposed on stdio (`libre-cr-review mcp-stdio`) or SSE (`/mcp` on the same HTTP listener, token-auth required for SSE).
 
@@ -184,12 +196,16 @@ We deliberately do **not** expose the lower-level tools (`grep`, `find_reference
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │  SQLite store                                                 │   │
-│  │  sessions, turns, notes, tool_traces, providers              │   │
+│  │  sessions, turns, tool_traces, turns_fts                     │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Agent Loop
+
+What the loop *hands the model* — the grounding rules in the system prompt, the evidence contracts (`Selection.text`, numbered reads, the three-dot PR diff), which tools are hidden from it, how prior turns are replayed, and the caps that bound all of it — is specified in `10-grounding-and-context.md`. Two field failures came out of that surface rather than out of the loop's control flow, so it is contracted separately.
+
+Two consequences are visible in the loop itself. Worktree-management tools (`clone_repo`, `discover_repo`, `scan_for_repos`, `prepare_worktree`, `list_worktrees`, `remove_worktree`) are never offered to the model and are refused if called; `get_pr_diff` is computed by the router as a three-dot `git_diff` against `origin/<base>...HEAD` rather than read from scraped page data.
 
 Pseudo-Rust for the core loop. The real implementation is ~300 lines including streaming + cancellation + error handling.
 
@@ -264,7 +280,7 @@ Key properties:
 
 - **Streaming text** flows to the UI as it arrives. Tool calls also stream so the panel can show what's happening.
 - **Tool calls within a single LLM turn run in parallel** via `join_all`. A typical "find callers and history" question results in 2-3 concurrent tool dispatches; their result blocks are reassembled in the model's original order.
-- **Bounded** at `MAX_TOOL_TURNS = 25`. Past this, the agent has clearly gone off the rails — return an error. (Verbs that legitimately need many turns should chain explicitly, not blow this budget.)
+- **Bounded** by `[limits] max_tool_turns` (default 25) — a config field, not a constant; the pseudo-code above uses `MAX_TOOL_TURNS`/`MAX_HISTORY` as shorthand for `ctx.limits.max_tool_turns` and `max_history_messages`. Past the bound, the agent has clearly gone off the rails — return an error. (Verbs that legitimately need many turns should chain explicitly, not blow this budget.)
 - **Cancellation** is via `tokio::select!` on the client-disconnect signal; partial state is persisted with `cancelled` status.
 - **Token usage is real.** The Anthropic stream parser reads `input_tokens` from `message_start` (`message.usage`) and `output_tokens` + `stop_reason` from `message_delta` (the API does not put them on `message_stop`); the OpenAI-compatible parser requests `stream_options: { include_usage: true }`. The final `done` frame and the per-turn `usage_in`/`usage_out` columns carry the actual tallies.
 - **Turn ordinals are assigned inside the insert transaction** (`insert_turn_auto_ordinal`) so concurrent note/turn writes on a session can't collide on the `UNIQUE(session_id, ordinal)` constraint.
@@ -289,13 +305,14 @@ The presentation-tool category is only registered for turns that have an active 
 
 ## Internal Tools (Detailed)
 
-- **`get_pr_diff`** `{}` → `{ files: [{ path, status, additions, deletions, hunks }] }`
-  Returns the diff as scraped from the browser (cached in the session). The agent uses this when the user's question doesn't reference a specific selection but is about "this PR."
+- **`get_pr_diff`** `{ paths?: string[] }` → `{ files: [{ path, status, hunks }] }`
+  Computed by the router as a three-dot `git_diff` (`merge_base: true`) against `origin/<base>...HEAD` on the session's worktree; the scraped payload is only the fallback when no worktree or base branch is known. No `additions` / `deletions` counts. `paths` narrows it, and narrowing matters — see `10-grounding-and-context.md` § The context budget.
 
 - **`get_pr_comments`** `{}` → `{ comments: [{ author, body, file?, line?, replies }] }`
   PR conversation comments. Useful for "has this been discussed before?"
 
-- **`get_pr_metadata`** `{}` → `{ title, description, author, base_branch, head_branch, files_changed }`
+- **`get_pr_metadata`** `{}` → `{ title, description, author, base_branch, head_branch }`
+  Copied from the scraped `pr_data`; no `files_changed`.
 
 - **`get_selection`** `{}` → `{ file, start_line, end_line, content } | null`
   The user's selection at question time. Set by the WS handshake.
@@ -313,7 +330,7 @@ Mirrors the POC's shape: a trait with implementations per provider.
 ```rust
 trait Provider: Send + Sync {
     fn id(&self) -> &str;
-    async fn stream(&self, messages: &[Message], tools: &[Tool])
+    async fn stream(&self, messages: &[Message], tools: &[ToolSchema])
         -> Result<impl Stream<Item = Result<StreamEvent>> + Send>;
     async fn validate(&self) -> Result<()>;
     // Providers opt in; the default returns "not supported".
@@ -340,6 +357,11 @@ Configuration includes:
 
 ## Conversation Storage (SQLite)
 
+Four tables plus an FTS index: `sessions`, `turns`, `tool_traces`, and
+`turns_fts`. There is no `notes` table and no `providers` table — a note is a
+`turns` row with `kind = "note"` (see `07-conversation-and-notes.md`), and the
+provider lives in config, not the database.
+
 ```sql
 CREATE TABLE sessions (
   session_id   TEXT PRIMARY KEY,
@@ -350,6 +372,7 @@ CREATE TABLE sessions (
   repo_id      TEXT,                       -- resolved by code daemon (nullable until ready)
   worktree_path TEXT,                       -- nullable until ready
   pr_data      TEXT NOT NULL,               -- JSON: title, description, author, branches, files
+  head_sha     TEXT,                       -- last observed PR head; drives the "diff changed" banner
   created_at   INTEGER NOT NULL,
   last_active_at INTEGER NOT NULL
 );
@@ -368,6 +391,7 @@ CREATE TABLE turns (
   severity     TEXT,                        -- for notes / agent-flagged issues
   usage_in     INTEGER,
   usage_out    INTEGER,
+  source_turn_id TEXT,                      -- for a note saved from an answer: the turn it came from
   created_at   INTEGER NOT NULL,
   UNIQUE (session_id, ordinal)
 );
@@ -409,7 +433,7 @@ data_dir = "~/.local/share/libre-cr-review"
 db = "~/.local/share/libre-cr-review/state.db"
 
 [provider]
-kind = "anthropic"             # "mock" | "anthropic" | "openai_compat"
+kind = "anthropic"             # "mock" | "anthropic" | "openai_compat"; default is "mock"
 api_key_enc = "<encrypted>"    # AES-GCM; empty → fall back to ANTHROPIC_API_KEY / OPENAI_API_KEY env var. Unused by "mock".
 model = "claude-sonnet-4-7-20260101"   # placeholder
 max_tokens = 4096
@@ -432,16 +456,34 @@ sse = true                     # /mcp on HTTP listener
 text = ""                      # prepended to system prompt every turn
 
 [limits]
-max_tool_turns = 25
-max_history_messages = 30
+max_tool_turns = 25            # tool rounds before the model must answer
+max_history_messages = 30      # two per earlier exchange (question + answer)
 session_idle_evict_days = 90
+# Context caps. Everything the model sees is bounded, so a long conversation
+# cannot outgrow the model's context window. Exceeding a cap never fails the
+# turn: the tool result is truncated, the model is told to narrow its next
+# request, and the `tool_result` frame carries `truncated_from` so the panel
+# can say it happened.
+max_tool_result_chars = 20000  # one live tool result
+max_turn_tool_chars = 120000   # all live tool output for one answer
+replay_full_turns = 2          # recent answers replayed with their evidence
+replay_max_full_turns = 5      # ceiling incl. turns the panel expanded
+replay_result_chars = 20000    # per replayed tool result
+replay_turn_chars = 40000      # per replayed answer
 ```
+
+Why these are tunable rather than constants: the right values depend on the
+model's context window, and the same PR can produce wildly different tool
+output. One `get_pr_diff` without `paths` measured 589,499 chars (~168k tokens)
+on a real PR — over half of a 262k-token context in a single tool result.
 
 ## Configuration UI
 
-The extension does **not** edit provider config or store the API key. Two reasons: (a) the LLM call happens in the daemon, so the key belongs there; (b) the extension's options page is a leaky abstraction across multiple PR-review surfaces.
+The extension does **not** edit daemon config — not the provider, not the API key, and not the `[limits]` caps. Two reasons: (a) the work happens in the daemon, so its settings belong there; (b) the extension's options page is a leaky abstraction across multiple PR-review surfaces, and splitting config across two editors is the same leak twice.
 
 The daemon serves a minimal config UI at `http://127.0.0.1:<port>/config-ui` — a self-contained static HTML page, no templating. It reads its bearer token from the `?token=` query parameter (the wrapper's `libre-cr config` and the extension popup both open the URL with the token already appended) and attaches it as `Authorization: Bearer` on the JSON calls it makes. The token only ever appears in the URL the user already trusts to launch the daemon; it is never baked into stored markup.
+
+That page is where both editable config blocks live: the provider settings **and** the `[limits]` context caps, in one form with one Save. It reads both from `GET /v1/config` and sends a `provider` and a `limits` patch to `POST /v1/config`. The `limits` patch is partial — unmentioned caps are left alone — and every value is range-checked, so a zero cap answers 400 with the reason rather than storing a config that hands the model empty tool results.
 
 The page lets the user set provider kind, model, max tokens, temperature, endpoint, and API key (posted to `POST /v1/config`). Two conveniences ride the supporting routes:
 
@@ -462,15 +504,19 @@ Pairing flow (first run):
 - Cancellation paths:
   - Client closes WS → server aborts.
   - User closes the PR tab → extension closes WS → server aborts.
-  - Daemon shutdown → all in-flight turns marked `cancelled`, transaction-committed, then process exits.
+  - Daemon shutdown → *intended:* all in-flight turns marked `cancelled`, transaction-committed, then process exits. Not built; see § Process Model.
 
 ## Error Handling
 
 Error responses include a machine-readable code and a human-readable message:
 
 ```json
-{ "error": "code_daemon_unavailable", "message": "Code intelligence is currently unavailable. Try again in a moment.", "recoverable": true }
+{ "error": "code_daemon_unavailable", "message": "Code intelligence is currently unavailable. Try again in a moment." }
 ```
+
+`recoverable` exists on the envelope type but is never populated on an HTTP
+response (it is omitted when absent). Only the WebSocket `error` frame carries
+a real `recoverable` flag.
 
 Categories:
 
