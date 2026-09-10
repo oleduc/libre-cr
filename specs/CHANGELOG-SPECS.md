@@ -323,10 +323,38 @@ Recorded as unobserved, to be checked during implementation: a thread with
 replies, and a resolved thread. The live specimen had exactly one comment and
 was unresolved, so the reply and resolved paths are designed, not seen.
 
-Also flagged, not fixed: `get_pr_comments` reads `pr_data.comments`, which the
-extension has never populated — the tool has always returned an empty list to
-the model. Filed rather than folded into this feature, because scraping every
-comment into the session row is a payload decision of its own.
+Also flagged, not fixed *at the time*: `get_pr_comments` reads
+`pr_data.comments`, which the extension has never populated — the tool has
+always returned an empty list to the model. Filed rather than folded into this
+feature, because scraping every comment into the session row is a payload
+decision of its own. It was fixed in its own change, immediately below.
+
+## 2026-09-10 — `get_pr_comments` given a real contract (code first)
+
+The bug above, fixed. The spec change is a **reconciliation**, not a design:
+the extraction was built and measured against a live PR, then written down.
+The `04` row therefore replaces a description of a tool that never worked.
+
+| Spec | Old | New | |
+|---|---|---|---|
+| `04-review-daemon.md` § Internal Tools | `get_pr_comments {} → { comments: [{ author, body, file?, line?, replies }] }` — "PR conversation comments" | The real shape: `{ comments: [{ thread_id, comment_id, author, body, file, line, start_line?, side, resolved, resolved_by?, created_at? }], total, truncated }`; line-anchored review comments only, replies flattened, capture caps and the `unavailable` marker named | Corrected |
+| `05-browser-extension.md` § Review-comment selection | (silent on whole-PR capture) | Records that whole-PR comment capture reads the embedded payload while *selection* reads the DOM, and why the two differ | New |
+
+The shape changed in three ways that matter, all from the measurement rather
+than the design:
+
+- `file` and `line` became **required, not optional** — a thread with no
+  anchor is dropped, because a concern the model cannot locate in the code is
+  not usable evidence.
+- `replies` (nested) became flattened rows sharing `thread_id`, which is what
+  the payload actually gives and what survives a character cap intact.
+- `resolved` was not in the old shape at all. 27 of 29 threads on the measured
+  PR were resolved; without the field the model would re-raise every settled
+  point.
+
+`side` and the R/L anchor encoding were confirmed here against a second
+specimen — the payload's `markersMap` key (`"R188"`) uses the same convention
+the selection design read off the DOM.
 
 ## What this record does not cover
 

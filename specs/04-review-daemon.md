@@ -308,8 +308,25 @@ The presentation-tool category is only registered for turns that have an active 
 - **`get_pr_diff`** `{ paths?: string[] }` → `{ files: [{ path, status, hunks }] }`
   Computed by the router as a three-dot `git_diff` (`merge_base: true`) against `origin/<base>...HEAD` on the session's worktree; the scraped payload is only the fallback when no worktree or base branch is known. No `additions` / `deletions` counts. `paths` narrows it, and narrowing matters — see `10-grounding-and-context.md` § The context budget.
 
-- **`get_pr_comments`** `{}` → `{ comments: [{ author, body, file?, line?, replies }] }`
-  PR conversation comments. Useful for "has this been discussed before?"
+- **`get_pr_comments`** `{}` → `{ comments: [{ thread_id, comment_id, author, body, file, line, start_line?, side, resolved, resolved_by?, created_at? }], total, truncated }`
+  Existing **review** comments — the threads annotating diff lines. Top-level
+  conversation comments are not included. Every comment carries its thread's
+  anchor (`file`/`line`/`side`, plus `start_line` for a range) so the model can
+  go read the code the concern points at, and its thread's `resolved` state so
+  it does not re-raise a settled point. Replies are flattened: one row per
+  comment, sharing `thread_id`. `comment_id` is `databaseId`, the same id the
+  REST API uses.
+
+  Captured by the extension from the page's embedded JSON payload, not the DOM:
+  comment threads are virtualized (one thread mounted of 29 on the measured
+  PR), so a DOM scrape would report almost nothing. Bounded at capture — 100
+  comments, 1,200 chars per body — and `truncated` is true when that bit, or
+  GitHub's own thread pagination, dropped anything.
+
+  When the extension could not read the payload at all, the result carries
+  `unavailable: true` instead of an empty list. An empty `comments` with no
+  such flag means the PR genuinely has no line comments. The tool previously
+  always returned `{ comments: [] }` — see `CHANGELOG-TESTING.md`.
 
 - **`get_pr_metadata`** `{}` → `{ title, description, author, base_branch, head_branch }`
   Copied from the scraped `pr_data`; no `files_changed`.

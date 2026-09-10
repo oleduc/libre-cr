@@ -205,6 +205,15 @@ Body text is capped at capture like other selection text (4,000 chars), and
 the daemon quotes it fenced under the same 2,000-char cap it already applies —
 no new knob.
 
+Separately from selection, the scraper captures **all** review comments into
+`pr_data.comments` for `get_pr_comments` (`04-review-daemon.md` § Internal
+Tools). That path reads the embedded page payload
+(`script[type="application/json"][data-target="react-app.embeddedData"]`),
+joining `markers.threads` with each `diffSummaries[].markersMap` for the
+anchor, because virtualization makes the DOM an unreliable source for a
+whole-PR list. Selection uses the DOM instead: it needs the element the
+reviewer is hovering, which is by definition mounted.
+
 The selection is sticky — it persists until cleared or replaced. The Q&A panel header shows the current selection ("`src/auth.ts:42-48` selected · [×]"). Asking a question without a selection is allowed (it's just "ask about this PR").
 
 ## Q&A Panel
