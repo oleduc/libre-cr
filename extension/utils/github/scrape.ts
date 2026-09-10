@@ -5,6 +5,7 @@
 // array on the result for the UI to render.
 
 import type { ScrapedPRData } from "../daemon/client";
+import { extractComments } from "./comments";
 import { isPullRequestPage } from "./detect";
 import { filePathOf } from "./diff";
 import { SELECTORS } from "./selectors";
@@ -64,11 +65,16 @@ export function scrapePr(doc: ParentNode = globalThis.document): ScrapeOutput {
     headEl = refs[1] ?? null;
   }
   const headShaEl = safeQuery<HTMLMetaElement>(doc, SELECTORS.headShaMeta, warnings, "head_sha");
+  const embedded =
+    safeQuery<HTMLScriptElement>(doc, SELECTORS.embeddedData, warnings, "embedded_data")
+      ?.textContent ?? null;
   const head_sha =
     headShaEl?.getAttribute("content") ??
-    safeQuery<HTMLScriptElement>(doc, SELECTORS.embeddedData, warnings, "embedded_data")
-      ?.textContent?.match(/"headOid":"([0-9a-f]{40})"/)?.[1] ??
+    embedded?.match(/"headOid":"([0-9a-f]{40})"/)?.[1] ??
     null;
+  // Comment threads are virtualized in the React diff UI, so the DOM shows
+  // only what is on screen; the embedded payload has all of them.
+  const comments = extractComments(embedded);
 
   const files: string[] = [];
   for (const el of safeQueryAll<HTMLElement>(
@@ -92,12 +98,16 @@ export function scrapePr(doc: ParentNode = globalThis.document): ScrapeOutput {
     head_branch: textOrNull(headEl),
     head_sha,
     files_changed: files,
+    ...(comments ? { comments } : {}),
   };
 
   // Soft-warn on a few high-value missing fields.
   if (!data.title) warnings.push("missing title — selectors may need refresh");
   if (loc && data.base_branch === null && data.head_branch === null) {
     warnings.push("missing base/head — selectors may need refresh");
+  }
+  if (loc && !comments) {
+    warnings.push("could not read review comments — payload shape may have changed");
   }
 
   return { data, warnings };

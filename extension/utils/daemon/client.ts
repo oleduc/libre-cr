@@ -4,6 +4,7 @@
 // auth and surfaces structured errors that mirror the daemon's
 // `ErrorEnvelope` shape.
 
+import type { ScrapedComments } from "../github/comments";
 import type { Selection } from "../selection";
 import type {
   CreateSessionResponse,
@@ -32,6 +33,10 @@ export interface ScrapedPRData {
   head_branch: string | null;
   head_sha: string | null;
   files_changed: string[];
+  /** Review comments anchored to diff lines. Absent means "could not read
+   *  them", which is not the same as "there are none" — `get_pr_comments`
+   *  says so rather than reporting an empty PR. */
+  comments?: ScrapedComments;
 }
 
 export class DaemonError extends Error {

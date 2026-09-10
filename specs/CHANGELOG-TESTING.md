@@ -324,6 +324,46 @@ beyond what either certification round reviewed.
   log line and no row, which is why this had to be reconstructed from
   arithmetic. *Trigger: manual testing — "this long discussion is now
   systematically crashing". Specs: 04 § Configuration, § Configuration UI.*
+- **`get_pr_comments` now returns actual comments.** The tool read
+  `pr_data.comments`, a field the scraper never wrote, so it had answered
+  `{ comments: [] }` to every call since it shipped (see § Still open, where it
+  was first filed). The extension now extracts review comments from the page's
+  embedded JSON payload — `markers.threads` joined with each
+  `diffSummaries[].markersMap` for the anchor — and each comment carries
+  `file`/`line`/`side` (`start_line` for a range), its thread id, its
+  `databaseId`, and its thread's `resolved` state, so the model can read the
+  code a concern points at and can tell a settled thread from a live one.
+  Replies are flattened into rows sharing a `thread_id`.
+
+  The **DOM was the wrong source**, for two reasons measured on live PRs.
+  Threads are virtualized: on our own PR exactly **1 of 29** was in the DOM.
+  And the changes UI renders only *unresolved* threads at all — a PR with 13
+  resolved reply threads had **none** in the DOM with the annotated file on
+  screen, and the one thread our PR did render was its one unresolved anchored
+  thread. The payload holds all of them and is already inside the reviewer's
+  authenticated session, which the daemon is not (no GitHub token; OAuth
+  posting is unbuilt). REST via a token remains the better source if one ever
+  exists — filed as v2, not built.
+
+  **A first cut of this dropped more than it kept.** It required a `file` and
+  `line` on every comment, reasoning that a concern the model cannot locate is
+  not usable evidence. Measuring the payload afterwards showed **17 of 29**
+  threads have no anchor in `markersMap` — GitHub only maps lines that survive
+  in the current diff — and one of those 17 was *unresolved*. So each comment
+  now carries an `anchor` of `line`, `file` (a file-level comment) or `none`,
+  and nothing is dropped for want of a location. The lesson is the same one
+  this ledger keeps recording: the assumption was reasonable, the measurement
+  disagreed, and only the measurement counts.
+
+  Capture is bounded (100 comments, 1,200 chars per body) because `pr_data` is
+  stored in the session row and re-sent on every init; `truncated` reports our
+  cap *or* GitHub's own `threadsPageInfo.hasNextPage`. When the payload cannot
+  be parsed the field is omitted and the tool answers `unavailable: true` —
+  "unknown", never "none", which is the failure the old behaviour had.
+  Measured on PR #1: 86 files, 29 threads (12 anchored, 17 not), 27 resolved,
+  bodies 1.4k–3.6k chars.
+  *Trigger: found while designing review-comment selection; fixed in its own PR
+  first. Specs: 04 § Internal Tools; 05 § Review-comment selection.*
 
 ---
 
@@ -628,14 +668,11 @@ remains deliberately unfixed. None of the open items block the demo path.
   nothing inspects config permissions. Exposure is bounded — the tool is hidden
   from the model, so it takes a caller holding the bearer token — but the
   containment check is cheap and worth having. *(spec audit findings 6.)*
-- **`get_pr_comments` has always returned an empty list.** It reads
-  `pr_data.comments`, and the extension's scraper never populates that field —
-  it builds title, description, author, branches and files only. So the model
-  has been offered a tool that answers nothing, silently, since it shipped.
-  Fixing it means scraping comments into the session row, which is a payload
-  decision (a busy PR has hundreds), so it is deliberately not bundled with
-  review-comment *selection* (`05-browser-extension.md` § Review-comment
-  selection). *Found while designing that feature.*
+- ~~**`get_pr_comments` has always returned an empty list.**~~ **Fixed** — see
+  § Manual-testing changes. The scraper now populates `pr_data.comments` from
+  the embedded page payload. Still open from the same finding: reading comments
+  through the REST API instead of the page, which needs a GitHub token the
+  daemon does not have (**v2**).
 - **`SpawnedClient` reconnect/restart loop** still lightly covered. *(round-1 I23.)*
 - **`MockCodeDaemonClient` tool/schema drift** vs the real daemon. *(round-1 I25.)*
 
