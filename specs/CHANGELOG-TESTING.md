@@ -422,9 +422,11 @@ remains deliberately unfixed. None of the open items block the demo path.
   unstyled annotation text), so "Clear all" looked like a no-op even though it
   cleared correctly (verified live: DOM markers and counters reset). **Fixed:**
   page-level effect CSS installed via `adoptedStyleSheets` (CSSOM insertion is
-  outside GitHub's `style-src` CSP), and the footer button renamed "Clear
-  highlights" so it isn't read as clearing the conversation. *Trigger: manual
-  testing Tier 3. Specs: 09 § presentation handler.*
+  outside GitHub's `style-src` CSP), and the footer button renamed so it isn't read as
+  clearing the conversation — "Clear highlights" at the time, and "Clear all
+  effects" since the CodeRabbit round below, because it also clears annotations
+  and flashes. *Trigger: manual testing Tier 3. Specs: 09 § Extension
+  Implementation.*
 - **Closing the panel left no way to reopen it** — `ContentApp` rendered
   nothing when closed. **Fixed:** a small fixed "CR" reopen button remains.
   *Trigger: manual testing.*
@@ -463,8 +465,10 @@ remains deliberately unfixed. None of the open items block the demo path.
   to the diff". **Fixed:** worktree-management tools (`clone_repo`,
   `discover_repo`, `scan_for_repos`, `prepare_worktree`, `list_worktrees`,
   `remove_worktree`) are no longer offered to the model and are refused if
-  called; `get_pr_diff` is computed by the router via `git_diff
-  origin/<base>..HEAD` on the session worktree (optional `paths`); the system
+  called; `get_pr_diff` is computed by the router via `git_diff` with
+  `merge_base: true` — a three-dot `origin/<base>...HEAD` — on the session
+  worktree (optional `paths`); two-dot is the notation this fix rejected, since
+  it attributes base-branch commits to the PR; the system
   prompt states the checkout path and base branch and that code tools already
   operate there. *Trigger: manual testing Tier 3. Specs: 04 § Agent Loop,
   § Tool Composition.*
@@ -610,9 +614,11 @@ remains deliberately unfixed. None of the open items block the demo path.
 - **`SpawnedClient` reconnect/restart loop** still lightly covered. *(round-1 I23.)*
 - **`MockCodeDaemonClient` tool/schema drift** vs the real daemon. *(round-1 I25.)*
 
-Planned/future (never claimed as built): signed releases + notarization,
-brew/scoop formulas, `libre-cr update` self-update, and OAuth review-posting
-(spec Phase 9) all remain marked planned in `08-distribution.md` / `plan.md`.
+Planned/future: signed releases + notarization, brew/scoop formulas,
+`libre-cr update` self-update, and OAuth review-posting are all unbuilt.
+`plan.md` marks them planned. `08-distribution.md` does **not** — it presents
+several of them as shipped, which the spec audit recorded as a finding of its
+own rather than something this ledger can claim is documented correctly.
 
 ---
 

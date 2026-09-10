@@ -465,9 +465,9 @@ on a real PR — over half of a 262k-token context in a single tool result.
 
 The extension does **not** edit daemon config — not the provider, not the API key, and not the `[limits]` caps. Two reasons: (a) the work happens in the daemon, so its settings belong there; (b) the extension's options page is a leaky abstraction across multiple PR-review surfaces, and splitting config across two editors is the same leak twice.
 
-That page edits the provider block **and** the `[limits]` context caps, in one form with one Save: it reads both from `GET /v1/config` and sends a `provider` and a `limits` patch to `POST /v1/config`. The `limits` patch is partial — unmentioned caps are left alone — and every value is range-checked, so a zero cap answers 400 with the reason rather than storing a config that hands the model empty tool results.
-
 The daemon serves a minimal config UI at `http://127.0.0.1:<port>/config-ui` — a self-contained static HTML page, no templating. It reads its bearer token from the `?token=` query parameter (the wrapper's `libre-cr config` and the extension popup both open the URL with the token already appended) and attaches it as `Authorization: Bearer` on the JSON calls it makes. The token only ever appears in the URL the user already trusts to launch the daemon; it is never baked into stored markup.
+
+That page is where both editable config blocks live: the provider settings **and** the `[limits]` context caps, in one form with one Save. It reads both from `GET /v1/config` and sends a `provider` and a `limits` patch to `POST /v1/config`. The `limits` patch is partial — unmentioned caps are left alone — and every value is range-checked, so a zero cap answers 400 with the reason rather than storing a config that hands the model empty tool results.
 
 The page lets the user set provider kind, model, max tokens, temperature, endpoint, and API key (posted to `POST /v1/config`). Two conveniences ride the supporting routes:
 
