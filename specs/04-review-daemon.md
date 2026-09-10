@@ -48,7 +48,7 @@ A **session** corresponds 1:1 with a PR (identified by `pr_url`). It holds the c
 
   Client → server (first frame): `{ question: string, selection?: Selection, verb?: string, mute_presentations?: bool, context_turn_ids?: string[] }`
 
-  A `Selection` carries the selected code's `text` alongside its coordinates, so the model never has to count lines to find what the reviewer pointed at. `context_turn_ids` names earlier turns of this session whose tool results should be replayed in full — the panel sends the ones the reviewer has left expanded. Ids that do not belong to the session are ignored. Both are specified in `10-grounding-and-context.md`.
+  A `Selection` carries the selected code's `text` alongside its coordinates, so the model never has to count lines to find what the reviewer pointed at. A fourth variant, `kind: "comment"`, carries a GitHub review thread — its comments, and the file, line and diff side it annotates (specified, not built; see `05-browser-extension.md` § Review-comment selection). `context_turn_ids` names earlier turns of this session whose tool results should be replayed in full — the panel sends the ones the reviewer has left expanded. Ids that do not belong to the session are ignored. Both are specified in `10-grounding-and-context.md`.
 
   When `mute_presentations` is `true` the daemon does not register the presentation tools for that turn at all, so the model cannot emit `presentation_call` frames — the mute toggle genuinely suppresses presentations rather than relying on the extension to ignore them. The extension also gates locally as defense in depth: while muted it answers any stray `presentation_call` with `{ ok: false, error: "presentation_muted" }`.
 

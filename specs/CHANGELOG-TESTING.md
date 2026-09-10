@@ -628,6 +628,14 @@ remains deliberately unfixed. None of the open items block the demo path.
   nothing inspects config permissions. Exposure is bounded — the tool is hidden
   from the model, so it takes a caller holding the bearer token — but the
   containment check is cheap and worth having. *(spec audit findings 6.)*
+- **`get_pr_comments` has always returned an empty list.** It reads
+  `pr_data.comments`, and the extension's scraper never populates that field —
+  it builds title, description, author, branches and files only. So the model
+  has been offered a tool that answers nothing, silently, since it shipped.
+  Fixing it means scraping comments into the session row, which is a payload
+  decision (a busy PR has hundreds), so it is deliberately not bundled with
+  review-comment *selection* (`05-browser-extension.md` § Review-comment
+  selection). *Found while designing that feature.*
 - **`SpawnedClient` reconnect/restart loop** still lightly covered. *(round-1 I23.)*
 - **`MockCodeDaemonClient` tool/schema drift** vs the real daemon. *(round-1 I25.)*
 

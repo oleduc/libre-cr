@@ -120,18 +120,90 @@ The "CR" button stays minimal — it indicates connectivity and opens the Q&A pa
 
 ## Selection Model
 
-Reviewers select code in three ways. Each produces a structured `Selection` object the extension sends with the question.
+Reviewers select code in three ways, or pick a review comment. Each produces a structured `Selection` object the extension sends with the question. Every variant may carry the selected text (see `10-grounding-and-context.md` § Evidence on the wire).
 
 ```ts
 type Selection =
-  | { kind: "line",  file: string, line: number }
-  | { kind: "range", file: string, start_line: number, end_line: number }
-  | { kind: "symbol", file: string, line: number, column: number, identifier: string };
+  | { kind: "line",  file: string, line: number, text?: string }
+  | { kind: "range", file: string, start_line: number, end_line: number, text?: string }
+  | { kind: "symbol", file: string, line: number, column: number, identifier: string, text?: string }
+  | { kind: "comment", comment_id: string, file: string, line: number,
+      side: "left" | "right", comments: { author: string, body: string }[] };
 ```
 
 - **Line:** click on a diff line number gutter.
 - **Range:** shift-click extends; multi-line drag selection.
 - **Symbol:** Cmd/Ctrl-click on an identifier. `pickIdentifier` is a regex over the clicked line's text, with the column derived from the mouse offset across the cell — there is no tree-sitter layer in the extension, minimal or otherwise. The daemon's `find_definition` would resolve it, but that tool is a stub (see `03-code-daemon.md` § Symbols), so a symbol selection is currently only an anchor for the question.
+
+### Review-comment selection
+
+> **Status: specified, not built.** Written before the implementation, unlike
+> most of what follows a testing round. The selectors below were read off a
+> live PR page rather than guessed — see the table — but nothing here has run
+> yet.
+
+A reviewer can pick a **GitHub review comment** — one of the threads that
+annotate a source line in the diff — and ask about it: *"is this concern
+valid?"*, *"did the reply actually answer it?"* The comment is context for the
+question, exactly like a code selection.
+
+**The unit is the thread, not a single comment.** A review thread accumulates
+replies, and the reply is frequently where the answer lives ("intentional,
+because X"). Capturing only the top comment would routinely drop the half that
+resolves the question. `comment_id` is the top comment's id — the thread's
+identity for citation and dedup — and `comments` carries the thread oldest
+first.
+
+**Why the anchor matters more than the body.** An inline review comment knows
+its `file` and `line`, so the selection hands the model both the concern *and*
+where it points; the model can then read that location itself with
+`get_pr_diff --paths` or `read_file`. That is what makes a separate
+multi-item "context basket" unnecessary: the anchor already links comment to
+code.
+
+`side` is carried because a comment on a *removed* line has an OLD-side line
+number, and resolving it against the new file would read the wrong line. (The
+three code variants do not carry side — a pre-existing gap, not widened here.)
+
+**Gesture: a hover affordance, not a click.** Hovering a thread reveals a
+small "Ask about this" control; clicking it sets the selection and opens the
+panel. A modifier-click was rejected: a comment body is an interactive region
+full of links, `Reply` and `Resolve`, and hijacking clicks there is materially
+riskier than in a diff cell. The control is our own injected element, so it
+competes with nothing.
+
+Injection follows the same discipline as presentation effects
+(`09-presentation-tools.md`): marked with `data-libre-cr-*` attributes, since
+React rewrites `className`; created on demand from a delegated `mouseover`
+rather than pre-injected, because comment threads are **virtualized** — only
+the mounted file's threads exist in the DOM at all.
+
+**Verified selectors** (read from a live PR, 2026-09-10; CSS-module class
+names such as `ReviewThread-module__…` are build-hashed and must never be
+used):
+
+| What | Selector | Verified value |
+|---|---|---|
+| Thread container | `[data-testid="review-thread"]` | 1 mounted of 20 threads on the PR |
+| Comment id | descendant `[id^="r"]` matching `^r\d+$` | `r3872880867` — the same id GitHub's REST API uses |
+| Annotated file | enclosing `table[aria-label^="Diff for: "]` | `crates/libre-cr-review/src/provider/anthropic.rs` |
+| Annotated line + side | the thread's **own** `tr`, `td[data-line-number][data-diff-side]` | `36` / `right` — matches the API's `line` for that comment |
+| Comment body | `.markdown-body` within the thread | present |
+| Author | `[data-testid="avatar-link"]` href, or the header's `a[href^="/"]` | `coderabbitai[bot]` |
+
+The line comes from the thread's own row, **not** from the preceding code row.
+An earlier draft of this design walked backwards to the previous row and got
+`35` for a comment the API places on `36`; the thread row carries the correct
+number itself.
+
+Two things are designed but unobserved, and should be checked when
+implementing: a thread with **replies** (the specimen had exactly one comment,
+one header, one body), and a **resolved** thread (the specimen was unresolved;
+`[data-testid="unified-comment-resolve-button"]` exists as a control).
+
+Body text is capped at capture like other selection text (4,000 chars), and
+the daemon quotes it fenced under the same 2,000-char cap it already applies —
+no new knob.
 
 The selection is sticky — it persists until cleared or replaced. The Q&A panel header shows the current selection ("`src/auth.ts:42-48` selected · [×]"). Asking a question without a selection is allowed (it's just "ask about this PR").
 

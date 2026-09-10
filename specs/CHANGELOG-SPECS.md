@@ -295,6 +295,39 @@ values duplicates `[limits]` and should become a pointer.
 
 ---
 
+## 2026-09-10 — Review-comment selection (specified, not built)
+
+A feature spec written **before** the implementation — the first entry here
+that is a design decision rather than a reconciliation, and therefore the
+first that can fail by drift rather than by laundering. It carries a
+`Status: specified, not built` marker until the code lands.
+
+| Spec | Change | |
+|---|---|---|
+| `05-browser-extension.md` § Selection Model | `Selection` gains a fourth variant, `kind: "comment"`, carrying a GitHub review thread plus the `file`, `line` and `side` it annotates | New |
+| `05-browser-extension.md` | New § Review-comment selection: why the unit is the thread and not one comment, why the anchor makes a multi-item context basket unnecessary, the hover-affordance gesture and why a modifier-click was rejected, and a table of selectors **read from a live PR page** rather than guessed | New |
+| `04-review-daemon.md` § Ask / streaming Q&A | Notes the fourth `Selection` variant on the wire | New |
+| `10-grounding-and-context.md` § Evidence on the wire | New subsection: a review comment arrives with its anchor, and why `side` is carried | New |
+
+Two facts came out of inspecting a real PR rather than reasoning about it, and
+both contradicted a draft of this design:
+
+- The annotated line is on the **thread's own `tr`**, not the preceding code
+  row. An earlier draft walked backwards one row and produced `35` for a
+  comment GitHub places on `36`.
+- CSS-module class names in that UI (`ReviewThread-module__…`) are
+  build-hashed and unusable as selectors; the stable hooks are `data-testid`
+  attributes, the `r<comment_id>` anchor, and `.markdown-body`.
+
+Recorded as unobserved, to be checked during implementation: a thread with
+replies, and a resolved thread. The live specimen had exactly one comment and
+was unresolved, so the reply and resolved paths are designed, not seen.
+
+Also flagged, not fixed: `get_pr_comments` reads `pr_data.comments`, which the
+extension has never populated — the tool has always returned an empty list to
+the model. Filed rather than folded into this feature, because scraping every
+comment into the session row is a payload decision of its own.
+
 ## What this record does not cover
 
 - **Nothing was verified by running the system.** The audit and these

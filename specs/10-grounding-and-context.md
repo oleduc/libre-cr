@@ -74,6 +74,21 @@ side*, so a right-side selection never quotes the deleted line.
 2,000 characters. Without this the model knew only "line 38" and had to count
 lines in an unnumbered blob to find it — which is exactly what it got wrong.
 
+### A review comment arrives with its anchor
+
+A `Selection` of `kind: "comment"` carries a GitHub review thread — the
+comments themselves, plus the `file`, `line` and diff `side` the thread
+annotates. The anchor is the load-bearing half: it lets the model read the code
+the concern is about instead of reasoning from the concern alone, which is the
+same principle as quoting the selected line rather than naming it.
+
+`side` is carried because a comment on a removed line has an OLD-side number;
+resolving it against the new file would read the wrong line — the identical
+failure mode as quoting the wrong side of a replacement row.
+
+*Specified, not built* — see `05-browser-extension.md` § Review-comment
+selection.
+
 ### Reads are line-numbered
 
 `read_file` returns content with each line prefixed by its 1-based number in a
