@@ -179,9 +179,19 @@ React rewrites `className`; created on demand from a delegated `mouseover`
 rather than pre-injected, because comment threads are **virtualized** — only
 the mounted file's threads exist in the DOM at all.
 
-**Verified selectors** (read from a live PR, 2026-09-10; CSS-module class
-names such as `ReviewThread-module__…` are build-hashed and must never be
-used):
+**Both tabs are supported**, and they are different DOMs — the same split as
+everywhere else in `selectors.ts`. The Conversation tab is the classic
+server-rendered markup: a thread is `.js-resolvable-timeline-thread-container`,
+comments are `id="discussion_r<databaseId>"`, the path is the header link's
+text, and the thread carries **its own diff hunk** whose *last* numbered row is
+the annotated line (`td.blob-num[data-line-number]`; `blob-num-deletion` = old
+side). A resolved thread there is collapsed behind `data-deferred-content-url`
+with no body in the DOM, so it yields no selection — the same practical limit
+as the changes tab, by a different mechanism.
+
+**Verified selectors** for the React changes UI (read from a live PR,
+2026-09-10; CSS-module class names such as `ReviewThread-module__…` are
+build-hashed and must never be used):
 
 | What | Selector | Verified value |
 |---|---|---|
@@ -219,6 +229,10 @@ landed, on PRs picked for having them (2026-09-10):
   unresolved threads only, and `Selection` carries no `resolved` field —
   nothing selectable is resolved. Resolved threads reach the model the other
   way, through `get_pr_comments`, which reads the payload and does see them.
+
+The affordance is mounted whether or not the Q&A panel is open — the panel
+opens on selecting a comment. Requiring the panel first would defeat the
+gesture, whose point is to start from the comment.
 
 One case the design missed entirely: a **file-level** review comment
 (`markersMap` key `FILE`) renders as a thread with no diff row, so it yields no

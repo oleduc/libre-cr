@@ -75,6 +75,68 @@ describe("selectionFromThread", () => {
   });
 });
 
+// The classic Conversation-tab DOM, read off a live PR: the thread carries its
+// own hunk, and the annotated line is its *last* numbered row.
+function timelineThread(comments: { login: string; body: string }[], deletion = false): string {
+  const cls = deletion ? "blob-num blob-num-deletion" : "blob-num blob-num-addition";
+  return `
+  <div class="review-thread-component js-comment-container js-resolvable-timeline-thread-container" data-resolved="false">
+    <a class="text-mono" href="/o/r/pull/1/files#diff-abc">src/provider.rs</a>
+    <table>
+      <tr><td class="${cls} empty-cell"></td><td class="${cls}" data-line-number="34"></td></tr>
+      <tr><td class="${cls} empty-cell"></td><td class="${cls}" data-line-number="36"></td></tr>
+    </table>
+    ${comments
+      .map(
+        (c) => `<div id="discussion_r${3872880867 + comments.indexOf(c)}" class="timeline-comment-group">
+          <a class="author" href="/${c.login}">${c.login}</a>
+          <div class="comment-body">${c.body}</div>
+        </div>`,
+      )
+      .join("")}
+  </div>`;
+}
+
+describe("selectionFromThread — Conversation tab", () => {
+  it("reads the path from the header link and the line from the hunk's last row", () => {
+    document.body.innerHTML = timelineThread([
+      { login: "coderabbitai[bot]", body: "Concern." },
+      { login: "oleduc", body: "Addressed." },
+    ]);
+    const sel = selectionFromThread(
+      document.querySelector(".js-resolvable-timeline-thread-container")!,
+    );
+    expect(sel).toEqual({
+      kind: "comment",
+      comment_id: "3872880867",
+      file: "src/provider.rs",
+      line: 36,
+      side: "right",
+      comments: [
+        { author: "coderabbitai[bot]", body: "Concern." },
+        { author: "oleduc", body: "Addressed." },
+      ],
+    });
+  });
+
+  it("carries the old side for a deleted-line thread", () => {
+    document.body.innerHTML = timelineThread([{ login: "r", body: "gone?" }], true);
+    expect(
+      selectionFromThread(document.querySelector(".js-resolvable-timeline-thread-container")!),
+    ).toMatchObject({ side: "left", line: 36 });
+  });
+
+  it("returns null for a collapsed thread whose body has not loaded", () => {
+    // A resolved thread on the Conversation tab is deferred: header only.
+    document.body.innerHTML =
+      '<div class="js-resolvable-timeline-thread-container" data-resolved="true" data-deferred-content-url="/x">' +
+      '<a class="text-mono" href="#">src/a.rs</a></div>';
+    expect(
+      selectionFromThread(document.querySelector(".js-resolvable-timeline-thread-container")!),
+    ).toBeNull();
+  });
+});
+
 describe("installCommentAffordance", () => {
   let onSelect: (s: Selection) => void;
   let seen: Selection[];

@@ -377,6 +377,14 @@ beyond what either certification round reviewed.
   on `documentElement`, positioned `fixed` from the thread's rect — outside
   React's tree, so a re-render cannot strip it and nothing needs re-injecting.
 
+  Both tabs work, and they are different DOMs: the Conversation tab is the
+  classic markup (`.js-resolvable-timeline-thread-container`,
+  `id="discussion_r<databaseId>"`, path from the header link, line from the
+  thread's own hunk's last numbered row). Manual testing found this the hard
+  way — the first cut handled only the changes tab, and the affordance was also
+  mounted only while the Q&A panel was open, so with the panel collapsed
+  nothing appeared anywhere. Selecting a comment now opens the panel.
+
   Two things the spec had flagged as designed-but-unobserved were checked on
   live PRs first. A thread with replies behaved exactly as designed. A resolved
   thread turned out not to exist in the DOM at all — the changes UI renders

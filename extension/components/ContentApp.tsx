@@ -168,23 +168,37 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
     }
   }, [open, state.status, history]);
 
+  // "Ask about this" on a review comment is an explicit request to ask, so it
+  // opens the panel. A line/range selection does not: it rides GitHub's own
+  // line-number gesture, and hijacking that to pop a panel open would be rude.
+  const onSelect = (sel: Selection | null) => {
+    setSelection(sel);
+    if (sel?.kind === "comment") setOpen(true);
+  };
+
   if (!open) {
     return (
-      <button
-        type="button"
-        className="libre-cr-reopen"
-        title="Open Libre CR"
-        aria-label="Open Libre CR"
-        onClick={() => setOpen(true)}
-      >
-        CR
-      </button>
+      <>
+        {/* Mounted while collapsed too — otherwise the only way to select
+            anything is to open the panel first, which the affordance's whole
+            point is to skip. */}
+        <SelectionLayer onSelect={onSelect} />
+        <button
+          type="button"
+          className="libre-cr-reopen"
+          title="Open Libre CR"
+          aria-label="Open Libre CR"
+          onClick={() => setOpen(true)}
+        >
+          CR
+        </button>
+      </>
     );
   }
 
   return (
     <>
-      <SelectionLayer onSelect={setSelection} />
+      <SelectionLayer onSelect={onSelect} />
       <Shell prUrl={prUrl}>
         {state.status === "loading" ? (
           <div className="libre-cr-titlebar">Libre CR — loading…</div>
