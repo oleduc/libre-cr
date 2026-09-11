@@ -107,7 +107,12 @@ impl Default for ProviderConfig {
             api_key_enc: String::new(),
             model: "mock-model".into(),
             max_tokens: 4096,
-            temperature: 0.0,
+            // Not zero. Greedy decoding makes a repeated tool call an
+            // absorbing state: identical context in, identical call out, and
+            // re-running it produces an identical observation. One question
+            // spent 27 identical greps that way. A little randomness breaks
+            // the tie without making tool routing erratic.
+            temperature: 0.2,
             endpoint: String::new(),
             chatgpt_token_file: default_chatgpt_token_file(),
         }
@@ -412,6 +417,14 @@ event = { type = "text_delta", text = "hi" }
                 "default_path must not use Application Support: {s}"
             );
         }
+    }
+
+    #[test]
+    fn default_temperature_is_not_greedy() {
+        assert!(
+            ProviderConfig::default().temperature > 0.0,
+            "temperature 0 makes a repeated tool call an absorbing state"
+        );
     }
 
     /// Deriving at the window the current defaults were tuned for must land

@@ -380,7 +380,7 @@ Configuration includes:
 - Model
 - Endpoint override
 - Max tokens
-- Temperature (defaults to 0 for determinism in tool routing; can be raised for free-form explanation verbs)
+- Temperature (defaults to **0.2**). Not zero: greedy decoding makes a repeated tool call an absorbing state — identical context produces the identical call, whose result is identical again, so nothing moves. A live question spent 27 identical greps that way before the round limit stopped it. The loop guards catch the repetition regardless (`10-grounding-and-context.md`), but the default should not invite it. Raise it further for free-form explanation verbs; keep it low for tool routing.
 - Optional system prompt prepended to every turn ("global instructions")
 
 ## ChatGPT subscription provider
@@ -571,7 +571,7 @@ kind = "anthropic"             # "mock" | "anthropic" | "openai_compat"; default
 api_key_enc = "<encrypted>"    # AES-GCM; empty → fall back to ANTHROPIC_API_KEY / OPENAI_API_KEY env var. Unused by "mock".
 model = "claude-sonnet-4-7-20260101"   # placeholder
 max_tokens = 4096
-temperature = 0.0
+temperature = 0.2              # not 0: greedy decoding makes tool-call loops an absorbing state
 endpoint = ""                  # optional override
 
 [code_daemon]
