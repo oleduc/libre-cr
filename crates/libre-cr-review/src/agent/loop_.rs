@@ -14,7 +14,7 @@ use crate::config::Limits;
 use crate::error::{Error, Result};
 use crate::provider::{ContentBlock, Message, Provider, Role, StreamEvent};
 use crate::storage::{Severity, Store, ToolTrace, Turn, TurnKind, TurnStatus};
-use crate::tools::{ToolCall, ToolRouter};
+use crate::tools::{ToolCall, ToolOutcome, ToolRouter};
 
 use super::sink::FrameSink;
 
@@ -201,6 +201,18 @@ fn make_user_tool_results(blocks: Vec<ContentBlock>) -> Message {
     }
 }
 
+/// What a turn has accumulated so far. Held by `run_turn` rather than by the
+/// loop, so a turn that fails half-way still has its evidence to persist —
+/// previously a failure stored an empty row and the tool calls were lost with
+/// the connection.
+#[derive(Default)]
+struct TurnState {
+    answer: String,
+    traces: Vec<ToolTrace>,
+    usage: UsageTally,
+    tool_call_count: usize,
+}
+
 /// Run one turn end-to-end. Streams frames to `sink`, persists the turn,
 /// returns the result. Cancellation is performed by the caller dropping the
 /// returned future.
@@ -211,7 +223,38 @@ pub async fn run_turn(
 ) -> Result<TurnResult> {
     let started = Instant::now();
     let turn_id = format!("t_{}", Uuid::new_v4().simple());
+    let mut st = TurnState::default();
+    let out = run_turn_inner(ctx, &input, sink, &turn_id, started, &mut st).await;
+    if let Err(e) = &out {
+        // Persist what the turn did manage: the streamed prose, every tool
+        // call, and the tokens it actually spent. A failed turn used to store
+        // an empty answer, no traces and `usage 0/0`, so the export showed
+        // "(turn failed)" over nothing and the cost was invisible.
+        if let Err(pe) = persist(
+            ctx,
+            &turn_id,
+            &input,
+            &format!("{}\n\n_(turn failed: {e})_", st.answer),
+            TurnStatus::Error,
+            &st.traces,
+            st.usage.clone(),
+        )
+        .await
+        {
+            tracing::warn!(error = %pe, "persist failed turn");
+        }
+    }
+    out
+}
 
+async fn run_turn_inner(
+    ctx: &TurnContext,
+    input: &TurnInput,
+    sink: &dyn FrameSink,
+    turn_id: &str,
+    started: Instant,
+    st: &mut TurnState,
+) -> Result<TurnResult> {
     let has_presentation = ctx
         .router
         .tools_for_verb(input.verb.as_deref())
@@ -246,15 +289,17 @@ pub async fn run_turn(
 
     let tools = ctx.router.tools_for_verb(input.verb.as_deref());
 
-    let mut traces: Vec<ToolTrace> = Vec::new();
-    let mut answer = String::new();
-    let mut usage = UsageTally::default();
-    let mut tool_call_count = 0usize;
     // Shared across every round of this turn: the per-result cap alone still
     // permits `max_tool_turns` × that cap of tool output in one request.
     let mut tool_chars_spent = 0usize;
+    // Every (tool, arguments) pair already dispatched this turn, and the round
+    // it ran in. The model's tools are all read-only, so an identical call can
+    // only return what it returned the first time.
+    let mut seen_calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    // Consecutive rounds in which the model asked for nothing new.
+    let mut stalled_rounds = 0usize;
 
-    for _ in 0..ctx.limits.max_tool_turns {
+    for round in 1..=ctx.limits.max_tool_turns as usize {
         let mut text_buf = String::new();
         let mut tool_uses: Vec<(String, String, serde_json::Value)> = Vec::new();
         let mut stream = ctx.provider.stream(&messages, &tools).await?;
@@ -275,8 +320,8 @@ pub async fn run_turn(
                     ..
                 } => {
                     last_usage = UsageTally {
-                        input_tokens: usage.input_tokens + input_tokens,
-                        output_tokens: usage.output_tokens + output_tokens,
+                        input_tokens: st.usage.input_tokens + input_tokens,
+                        output_tokens: st.usage.output_tokens + output_tokens,
                     };
                     got_done = true;
                     break;
@@ -290,35 +335,17 @@ pub async fn run_turn(
         if !got_done {
             return Err(Error::Internal("provider stream ended without done".into()));
         }
-        usage = last_usage;
+        st.usage = last_usage;
 
         if tool_uses.is_empty() {
             // Final answer.
-            answer.push_str(&text_buf);
-            let result = persist(
-                ctx,
-                &turn_id,
-                &input,
-                &answer,
-                TurnStatus::Ok,
-                &traces,
-                usage.clone(),
-            )
-            .await?;
-            sink.done(&turn_id, usage.clone()).await?;
-            return Ok(TurnResult {
-                turn_id: result,
-                answer,
-                status: TurnStatus::Ok,
-                usage,
-                tool_call_count,
-                wall_ms: started.elapsed().as_millis() as u64,
-            });
+            st.answer.push_str(&text_buf);
+            return finish(ctx, turn_id, input, sink, st, started).await;
         }
 
         // Accumulate into transcript for next provider round.
         if !text_buf.is_empty() {
-            answer.push_str(&text_buf);
+            st.answer.push_str(&text_buf);
         }
         let assistant = make_assistant_message(text_buf, &tool_uses);
         messages.push(assistant);
@@ -330,14 +357,49 @@ pub async fn run_turn(
         for (id, name, input_json) in &tool_uses {
             sink.tool_call(id, name, input_json.clone()).await?;
         }
-        let outcomes = futures::future::join_all(tool_uses.iter().map(|(id, name, input_json)| {
-            let call = ToolCall {
-                id: id.clone(),
-                name: name.clone(),
-                input: input_json.clone(),
-            };
-            async move { ctx.router.dispatch(&call).await }
-        }))
+        // A call this turn already made returns the same thing again — the
+        // model's tools are read-only. Re-running it burns a round and teaches
+        // the model nothing, which is how one question spent 27 greps on the
+        // same pattern and died at the round limit (manual testing, PR #475).
+        let keys: Vec<String> = tool_uses
+            .iter()
+            .map(|(_, name, input_json)| format!("{name}\u{0}{input_json}"))
+            .collect();
+        let repeats: Vec<Option<usize>> = keys.iter().map(|k| seen_calls.get(k).copied()).collect();
+        for k in &keys {
+            seen_calls.entry(k.clone()).or_insert(round);
+        }
+        if repeats.iter().all(|r| r.is_some()) {
+            stalled_rounds += 1;
+        } else {
+            stalled_rounds = 0;
+        }
+        let outcomes = futures::future::join_all(tool_uses.iter().zip(&repeats).map(
+            |((id, name, input_json), repeat)| {
+                let call = ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input_json.clone(),
+                };
+                async move {
+                    match repeat {
+                        Some(first) => ToolOutcome {
+                            ok: false,
+                            value: serde_json::json!({
+                                "error": "duplicate_call",
+                                "message": format!(
+                                    "Identical call already made this turn (round {first}); \
+                                     its result has not changed. Use what it returned, change \
+                                     the arguments, or answer from what you have."
+                                ),
+                            }),
+                            duration_ms: 0,
+                        },
+                        None => ctx.router.dispatch(&call).await,
+                    }
+                }
+            },
+        ))
         .await;
         let mut tool_result_blocks = Vec::new();
         for ((id, name, input_json), outcome) in tool_uses.into_iter().zip(outcomes) {
@@ -351,10 +413,10 @@ pub async fn run_turn(
             );
             sink.tool_result(&id, outcome.value.clone(), truncated_from)
                 .await?;
-            traces.push(ToolTrace {
+            st.traces.push(ToolTrace {
                 trace_id: format!("tr_{}", Uuid::new_v4().simple()),
-                turn_id: turn_id.clone(),
-                ordinal: (traces.len() as i64) + 1,
+                turn_id: turn_id.to_string(),
+                ordinal: (st.traces.len() as i64) + 1,
                 tool_name: name,
                 input_json,
                 // The store keeps the whole result: the cap is about what the
@@ -363,7 +425,7 @@ pub async fn run_turn(
                 duration_ms: outcome.duration_ms,
                 ok: outcome.ok,
             });
-            tool_call_count += 1;
+            st.tool_call_count += 1;
             tool_result_blocks.push(ContentBlock::ToolResult {
                 tool_use_id: id,
                 content,
@@ -371,8 +433,113 @@ pub async fn run_turn(
             });
         }
         messages.push(make_user_tool_results(tool_result_blocks));
+
+        // Two rounds in a row with nothing new asked: the model is going in
+        // circles. Stop paying for it and make it answer.
+        if stalled_rounds >= 2 {
+            tracing::warn!(
+                session_id = %ctx.session_id,
+                round,
+                calls = st.tool_call_count,
+                "turn stalled on repeated tool calls; forcing an answer"
+            );
+            break;
+        }
     }
-    Err(Error::TooManyToolTurns)
+
+    // The rounds are spent (or the model was looping). Ask once more with no
+    // tools: the reviewer still needs an answer, and everything gathered is
+    // already in the transcript. Failing here instead threw away 31 tool
+    // calls' work and reported only "too many tool turns".
+    force_answer(ctx, sink, &mut messages, turn_id, input, st, started).await
+}
+
+/// Final round with the tools withheld, so the model must answer in prose.
+async fn force_answer(
+    ctx: &TurnContext,
+    sink: &dyn FrameSink,
+    messages: &mut Vec<Message>,
+    turn_id: &str,
+    input: &TurnInput,
+    st: &mut TurnState,
+    started: Instant,
+) -> Result<TurnResult> {
+    messages.push(Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: format!(
+                "The tool budget for this question is spent ({} calls). No more tools are \
+                 available. Answer now from what you already gathered, and state plainly what \
+                 you could not verify.",
+                st.tool_call_count
+            ),
+        }],
+    });
+    let mut text = String::new();
+    let mut stream = ctx.provider.stream(messages, &[]).await?;
+    while let Some(ev) = stream.next().await {
+        match ev? {
+            StreamEvent::TextDelta { text: t } => {
+                sink.text_delta(&t).await?;
+                text.push_str(&t);
+            }
+            StreamEvent::Done {
+                input_tokens,
+                output_tokens,
+                ..
+            } => {
+                st.usage = UsageTally {
+                    input_tokens: st.usage.input_tokens + input_tokens,
+                    output_tokens: st.usage.output_tokens + output_tokens,
+                };
+                break;
+            }
+            StreamEvent::ToolUse { .. } => {}
+            StreamEvent::Error { message } => {
+                sink.error(&message, false).await?;
+                return Err(Error::Internal(message));
+            }
+        }
+    }
+    st.answer.push_str(&text);
+    let note = format!(
+        "\n\n_(Answered without finishing the investigation: this turn's tool budget — {} rounds, \
+         {} calls — was spent.)_",
+        ctx.limits.max_tool_turns, st.tool_call_count
+    );
+    st.answer.push_str(&note);
+    sink.text_delta(&note).await?;
+    finish(ctx, turn_id, input, sink, st, started).await
+}
+
+/// Persist a completed turn and emit `done`.
+async fn finish(
+    ctx: &TurnContext,
+    turn_id: &str,
+    input: &TurnInput,
+    sink: &dyn FrameSink,
+    st: &mut TurnState,
+    started: Instant,
+) -> Result<TurnResult> {
+    let result = persist(
+        ctx,
+        turn_id,
+        input,
+        &st.answer,
+        TurnStatus::Ok,
+        &st.traces,
+        st.usage.clone(),
+    )
+    .await?;
+    sink.done(turn_id, st.usage.clone()).await?;
+    Ok(TurnResult {
+        turn_id: result,
+        answer: std::mem::take(&mut st.answer),
+        status: TurnStatus::Ok,
+        usage: st.usage.clone(),
+        tool_call_count: st.tool_call_count,
+        wall_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -570,30 +737,6 @@ async fn build_history_messages(
 }
 
 /// Persist a turn as `cancelled` (used by the WS handler on disconnect).
-/// Persist a turn as `error` (used by the WS handler when the turn failed).
-///
-/// Without this a failed turn left no trace at all: no log line and no row, so
-/// the only evidence was the error frame in the browser, and diagnosing one
-/// meant reconstructing it from stored sizes.
-pub async fn persist_failed(
-    ctx: &TurnContext,
-    input: &TurnInput,
-    partial_answer: String,
-) -> Result<()> {
-    let turn_id = format!("t_{}", Uuid::new_v4().simple());
-    persist(
-        ctx,
-        &turn_id,
-        input,
-        &partial_answer,
-        TurnStatus::Error,
-        &[],
-        UsageTally::default(),
-    )
-    .await?;
-    Ok(())
-}
-
 pub async fn persist_cancelled(
     ctx: &TurnContext,
     input: &TurnInput,
@@ -1150,9 +1293,66 @@ mod tests {
         );
     }
 
+    /// A turn that fails must leave its evidence behind. It used to store an
+    /// empty answer, no traces and `usage 0/0`, so the export showed
+    /// "(turn failed)" over nothing (manual testing, PR #475).
     #[tokio::test]
-    async fn exhausts_budget() {
-        // Each round: tool_use + done — agent will keep dispatching forever.
+    async fn a_failed_turn_keeps_its_traces_and_usage() {
+        let script = vec![
+            ScriptedEvent {
+                delay_ms: 0,
+                event: StreamEvent::ToolUse {
+                    id: "x".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({"pattern": "a"}),
+                },
+            },
+            ScriptedEvent {
+                delay_ms: 0,
+                event: StreamEvent::Done {
+                    input_tokens: 100,
+                    output_tokens: 7,
+                    stop_reason: "tool_use".into(),
+                },
+            },
+            ScriptedEvent {
+                delay_ms: 0,
+                event: StreamEvent::Error {
+                    message: "provider exploded".into(),
+                },
+            },
+        ];
+        let (ctx, sink) = ctx_with_script(script).await;
+        let r = run_turn(
+            &ctx,
+            TurnInput {
+                question: "why?".into(),
+                selection: None,
+                verb: None,
+                context_turn_ids: vec![],
+            },
+            &sink,
+        )
+        .await;
+        assert!(r.is_err());
+        let turns = ctx.store.list_turns(&ctx.session_id).await.unwrap();
+        let failed = turns
+            .iter()
+            .find(|t| t.status == TurnStatus::Error)
+            .unwrap();
+        assert_eq!(
+            ctx.store.list_traces(&failed.turn_id).await.unwrap().len(),
+            1
+        );
+        assert_eq!(failed.usage_in, 100);
+        assert!(failed.answer.as_deref().unwrap().contains("turn failed"));
+    }
+
+    /// The model repeating one call cannot burn the whole budget, and the
+    /// reviewer still gets an answer — 27 identical greps ended a turn with
+    /// "too many tool turns" and no answer at all (manual testing, PR #475).
+    #[tokio::test]
+    async fn repeated_calls_stop_the_loop_and_still_answer() {
         let mut script = Vec::new();
         for _ in 0..30 {
             script.push(ScriptedEvent {
@@ -1160,7 +1360,7 @@ mod tests {
                 event: StreamEvent::ToolUse {
                     id: "x".into(),
                     name: "grep".into(),
-                    input: serde_json::json!({}),
+                    input: serde_json::json!({"pattern": "same"}),
                 },
             });
             script.push(ScriptedEvent {
@@ -1183,7 +1383,59 @@ mod tests {
             },
             &sink,
         )
-        .await;
-        assert!(matches!(r, Err(Error::TooManyToolTurns)));
+        .await
+        .unwrap();
+        // Round 1 dispatches; rounds 2 and 3 are the same call again, so the
+        // loop stops there instead of running all 25.
+        assert_eq!(r.tool_call_count, 3);
+        assert!(r.answer.contains("tool budget"));
+        let traces = ctx.store.list_traces(&r.turn_id).await.unwrap();
+        assert_eq!(traces.len(), 3);
+        // The repeats were answered, not re-run.
+        assert_eq!(traces.iter().filter(|t| !t.ok).count(), 2);
+        assert!(traces[1].output_json.to_string().contains("duplicate_call"));
+    }
+
+    #[tokio::test]
+    async fn exhausts_budget() {
+        // Each round: a *different* tool call + done, so nothing is a repeat
+        // and the budget runs out honestly. The turn still answers.
+        let mut script = Vec::new();
+        for i in 0..30 {
+            script.push(ScriptedEvent {
+                delay_ms: 0,
+                event: StreamEvent::ToolUse {
+                    id: "x".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({ "pattern": format!("p{i}") }),
+                },
+            });
+            script.push(ScriptedEvent {
+                delay_ms: 0,
+                event: StreamEvent::Done {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    stop_reason: "tool_use".into(),
+                },
+            });
+        }
+        let (ctx, sink) = ctx_with_script(script).await;
+        let r = run_turn(
+            &ctx,
+            TurnInput {
+                question: "loop".into(),
+                selection: None,
+                verb: None,
+                context_turn_ids: vec![],
+            },
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.tool_call_count, ctx.limits.max_tool_turns as usize);
+        // Spending the budget is not a failure: the reviewer gets what the
+        // model has, with the shortfall stated.
+        assert!(r.answer.contains("tool budget"));
+        assert_eq!(r.status, TurnStatus::Ok);
     }
 }
