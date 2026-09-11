@@ -11,7 +11,16 @@ use tokio::sync::Mutex;
 use crate::config::ScriptedEvent;
 use crate::error::Result;
 
-use super::{Message, ModelInfo, Provider, StreamEvent, ToolSchema};
+use super::{Message, ModelInfo, Provider, ProviderCapabilities, StreamEvent, ToolSchema};
+/// Canned responses: nothing in the provider block reaches a network call.
+pub const CAPABILITIES: ProviderCapabilities = ProviderCapabilities {
+    api_key: false,
+    endpoint: false,
+    temperature: false,
+    max_tokens: false,
+    model: false,
+    model_list: true,
+};
 
 /// Provider that replays a script. Each call to `stream` consumes the next
 /// "burst" — events up to and including the next `Done` (or `Error`).
@@ -41,6 +50,10 @@ impl MockProvider {
 
 #[async_trait]
 impl Provider for MockProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        CAPABILITIES
+    }
+
     fn id(&self) -> &str {
         &self.id
     }

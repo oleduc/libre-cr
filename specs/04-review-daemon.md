@@ -345,6 +345,20 @@ struct ModelInfo {
 }
 ```
 
+**Config capabilities are the provider's to declare.** `Provider::capabilities`
+returns a `ProviderCapabilities` saying which of the provider block's fields it
+actually reads; the default supports everything, so a provider opts *out* of
+what it ignores and forgetting to declare leaves fields editable rather than
+silently greying them out. `GET /v1/provider/capabilities` returns the map for
+every kind, and the config UI disables the rest — a value that goes nowhere
+reads as configuration, and the ChatGPT kind ignores three of them.
+
+| Provider | Ignores |
+|---|---|
+| `chatgpt` | API key (it signs in), temperature, max tokens |
+| `mock` | API key, endpoint, temperature, max tokens, model |
+| `anthropic`, `openai_compat` | nothing |
+
 **Model capabilities are the provider's to report.** `list_models` is the only
 place that knows how a given API describes its models, and `ModelInfo` is the
 shape every provider answers in — so a new provider implements one method and

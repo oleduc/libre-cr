@@ -84,6 +84,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/provider/chatgpt/login", post(chatgpt_login))
         .route("/v1/provider/chatgpt/status", get(chatgpt_status))
         .route("/v1/limits/derive", get(limits_derive))
+        .route("/v1/provider/capabilities", get(provider_capabilities))
         .route("/v1/health", get(health))
         .route("/v1/health/code-daemon", get(health_code_daemon))
         .route("/v1/pair", post(pair))
@@ -649,6 +650,20 @@ async fn chatgpt_status(State(state): State<AppState>) -> Json<ChatGptStatus> {
     })
 }
 
+/// What each provider kind reads from its config, so the UI can disable the
+/// fields a kind ignores. Declared by the providers themselves
+/// (`Provider::capabilities`), never guessed here from the kind string.
+async fn provider_capabilities() -> Json<serde_json::Value> {
+    let map: serde_json::Map<String, serde_json::Value> = crate::provider::PROVIDER_KINDS
+        .iter()
+        .filter_map(|k| {
+            let caps = crate::provider::capabilities_for_kind(k)?;
+            Some(((*k).to_string(), serde_json::to_value(caps).ok()?))
+        })
+        .collect();
+    Json(serde_json::Value::Object(map))
+}
+
 /// Caps that suit a given context window. Read-only: the config UI fills the
 /// form with these and the user saves them, so a model switch never rewrites
 /// `review.toml` behind their back.
@@ -875,6 +890,7 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     <label class="inline"><input id="clear_key" type="checkbox" /> Clear the saved key (use the environment variable, or none)</label>
   </div>
   <p id="detectedHint" class="hint" hidden></p>
+  <p id="ignoredHint" class="hint" hidden></p>
 
   <div id="chatgptField" hidden>
     <p class="hint">Signs in with your own ChatGPT Plus/Pro subscription, the same way OpenAI's
@@ -1013,8 +1029,13 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   // The subscription provider has no key field: it has a sign-in.
   var chatgptField = document.getElementById("chatgptField");
   var chatgptStatusEl = document.getElementById("chatgptStatus");
+  var ignoredHint = document.getElementById("ignoredHint");
   var apiKeyField = document.getElementById("apiKeyField");
   var chatgptPoll = null;
+  // What each provider kind reads, from `GET /v1/provider/capabilities`.
+  // Until it arrives every field stays editable: a slow fetch must not look
+  // like an unsupported field.
+  var capabilities = {};
   // Context window per fetched model id — only for providers that report one
   // (`ModelInfo.context_tokens`). Cleared whenever the list is refetched.
   var modelContext = {};
@@ -1035,11 +1056,44 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       return st;
     }).catch(function () { chatgptStatusEl.textContent = "status unavailable"; });
   }
+  // Grey out what this provider ignores, and say so once rather than per
+  // field. A value that goes nowhere is worse than a disabled input: it reads
+  // as configuration.
+  var IGNORED_LABELS = {
+    temperature: "temperature",
+    max_tokens: "max tokens",
+    endpoint: "endpoint",
+    model: "model",
+  };
+  function applyCapabilities() {
+    var caps = capabilities[kindEl.value];
+    var ignored = [];
+    var fields = {
+      temperature: document.getElementById("temperature"),
+      max_tokens: document.getElementById("max_tokens"),
+      endpoint: endpointEl,
+      model: modelEl,
+    };
+    Object.keys(fields).forEach(function (key) {
+      var supported = !caps || caps[key] !== false;
+      fields[key].disabled = !supported;
+      if (!supported) ignored.push(IGNORED_LABELS[key]);
+    });
+    var listSupported = !caps || caps.model_list !== false;
+    document.getElementById("fetchModels").disabled = !listSupported;
+    modelSelect.disabled = !listSupported || (caps && caps.model === false);
+    ignoredHint.hidden = ignored.length === 0;
+    ignoredHint.textContent = ignored.length
+      ? "This provider ignores: " + ignored.join(", ") + "."
+      : "";
+    // The key field is replaced by the sign-in, not merely disabled.
+    apiKeyField.hidden = !!(caps && caps.api_key === false);
+  }
   function updateProviderFields() {
     var isChatgpt = kindEl.value === "chatgpt";
     chatgptField.hidden = !isChatgpt;
-    apiKeyField.hidden = isChatgpt;
     if (isChatgpt) refreshChatgptStatus();
+    applyCapabilities();
     updateDetectedHint();
   }
   document.getElementById("chatgptLogin").addEventListener("click", function () {
@@ -1072,6 +1126,14 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     clearKeyEl.checked = false;
     updateProviderFields();
   });
+
+  fetch("/v1/provider/capabilities", { headers: headers }).then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }).then(function (c) {
+    capabilities = c || {};
+    applyCapabilities();
+  }).catch(function () { /* everything stays editable */ });
 
   fetch("/v1/provider/detected", { headers: headers }).then(function (r) {
     if (!r.ok) throw new Error("HTTP " + r.status);

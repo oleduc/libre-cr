@@ -13,7 +13,9 @@ use serde_json::json;
 
 use crate::error::{Error, Result};
 
-use super::{ContentBlock, Message, ModelInfo, Provider, Role, StreamEvent, ToolSchema};
+use super::{
+    ContentBlock, Message, ModelInfo, Provider, ProviderCapabilities, Role, StreamEvent, ToolSchema,
+};
 
 /// Derive the `/models` URL from the configured chat-completions endpoint.
 /// The stored endpoint is `.../v1/chat/completions`; swap a trailing
@@ -56,6 +58,15 @@ fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
         })
         .unwrap_or_default()
 }
+/// Everything applies; the endpoint is the point of this kind.
+pub const CAPABILITIES: ProviderCapabilities = ProviderCapabilities {
+    api_key: true,
+    endpoint: true,
+    temperature: true,
+    max_tokens: true,
+    model: true,
+    model_list: true,
+};
 
 pub struct OpenAICompatProvider {
     id: String,
@@ -180,6 +191,10 @@ impl OpenAICompatProvider {
 
 #[async_trait]
 impl Provider for OpenAICompatProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        CAPABILITIES
+    }
+
     fn id(&self) -> &str {
         &self.id
     }

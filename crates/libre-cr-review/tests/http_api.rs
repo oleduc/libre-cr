@@ -501,6 +501,50 @@ async fn config_limits_round_trip_and_reject_out_of_range() {
     assert_eq!(still["limits"]["max_tool_result_chars"], 50_000);
 }
 
+/// Each provider declares what it reads, and the UI greys out the rest — a
+/// value that goes nowhere reads as configuration
+/// (`specs/04-review-daemon.md` § Configuration UI).
+#[tokio::test]
+async fn provider_capabilities_are_declared_per_kind() {
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+
+    let caps: serde_json::Value = c
+        .get(url(h.addr, "/v1/provider/capabilities"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // The subscription backend signs in and rejects sampling parameters.
+    assert_eq!(caps["chatgpt"]["api_key"], false);
+    assert_eq!(caps["chatgpt"]["temperature"], false);
+    assert_eq!(caps["chatgpt"]["max_tokens"], false);
+    assert_eq!(caps["chatgpt"]["model"], true);
+    // A key-based provider reads all of it.
+    assert_eq!(caps["openai_compat"]["api_key"], true);
+    assert_eq!(caps["openai_compat"]["temperature"], true);
+    // Mock reaches no network at all.
+    assert_eq!(caps["mock"]["endpoint"], false);
+    assert!(caps.get("anthropic").is_some());
+
+    let page = c
+        .get(url(h.addr, "/config-ui"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for needle in ["/v1/provider/capabilities", "This provider ignores: "] {
+        assert!(page.contains(needle), "config UI must use {needle}");
+    }
+}
+
 /// Caps can be sized from a model's context window — computed by the daemon,
 /// filled into the form, and saved only when the user saves
 /// (`specs/04-review-daemon.md` § Configuration UI).
@@ -567,7 +611,11 @@ async fn limits_can_be_derived_from_a_context_window_without_being_stored() {
         .text()
         .await
         .unwrap();
-    for needle in ["Size these to the model", "window.confirm(", "/v1/limits/derive"] {
+    for needle in [
+        "Size these to the model",
+        "window.confirm(",
+        "/v1/limits/derive",
+    ] {
         assert!(page.contains(needle), "config UI must offer {needle}");
     }
 }

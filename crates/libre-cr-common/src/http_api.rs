@@ -152,6 +152,41 @@ pub struct ModelInfo {
     pub context_tokens: Option<u64>,
 }
 
+/// What a provider actually reads from its config. The config UI disables the
+/// fields a provider ignores rather than letting a user tune a value that goes
+/// nowhere — `temperature` on a backend that rejects sampling parameters, an
+/// API key on one that signs in.
+///
+/// Declared by each provider (`Provider::capabilities`), never inferred from
+/// the kind string by the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapabilities {
+    pub api_key: bool,
+    pub endpoint: bool,
+    pub temperature: bool,
+    pub max_tokens: bool,
+    /// Whether the model field selects anything.
+    pub model: bool,
+    /// Whether `list_models` returns something.
+    pub model_list: bool,
+}
+
+impl Default for ProviderCapabilities {
+    /// Everything supported: a new provider opts *out* of what it ignores, so
+    /// forgetting to declare leaves fields editable rather than silently
+    /// greying them out.
+    fn default() -> Self {
+        Self {
+            api_key: true,
+            endpoint: true,
+            temperature: true,
+            max_tokens: true,
+            model: true,
+            model_list: true,
+        }
+    }
+}
+
 /// `GET /v1/limits/derive?context_tokens=N` — the character caps that suit a
 /// context window of that size. Returned for the config UI to *fill in*; the
 /// daemon stores nothing until the form is saved.

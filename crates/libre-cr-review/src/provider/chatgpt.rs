@@ -20,7 +20,9 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use super::chatgpt_auth::{self, Tokens};
-use super::{ContentBlock, Message, ModelInfo, Provider, Role, StreamEvent, ToolSchema};
+use super::{
+    ContentBlock, Message, ModelInfo, Provider, ProviderCapabilities, Role, StreamEvent, ToolSchema,
+};
 use crate::error::{Error, Result};
 
 const DEFAULT_BASE: &str = "https://chatgpt.com/backend-api/wham";
@@ -31,6 +33,16 @@ const DEFAULT_BASE: &str = "https://chatgpt.com/backend-api/wham";
 /// returned 1, `0.80.0` returned none. Raise this as the backend moves on; too
 /// low silently returns fewer models rather than an error.
 const CLIENT_VERSION: &str = "1.0.0";
+/// The subscription backend signs in rather than taking a key, and rejects
+/// sampling parameters outright — see `build_body`.
+pub const CAPABILITIES: ProviderCapabilities = ProviderCapabilities {
+    api_key: false,
+    endpoint: true,
+    temperature: false,
+    max_tokens: false,
+    model: true,
+    model_list: true,
+};
 
 pub struct ChatGptProvider {
     id: String,
@@ -184,6 +196,10 @@ impl ChatGptProvider {
 
 #[async_trait]
 impl Provider for ChatGptProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        CAPABILITIES
+    }
+
     fn id(&self) -> &str {
         &self.id
     }
@@ -717,7 +733,10 @@ mod tests {
         assert_eq!(models[0].context_tokens, Some(272_000));
         assert_eq!(models[1].context_tokens, None);
         // Empty list: this server has nothing for us (a stale client_version).
-        assert_eq!(parse_models(&serde_json::json!({"models": []})), Some(vec![]));
+        assert_eq!(
+            parse_models(&serde_json::json!({"models": []})),
+            Some(vec![])
+        );
         // No list at all: we asked something that is not this backend. An
         // endpoint left pointing at OpenRouter returns exactly this.
         assert_eq!(
