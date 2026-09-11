@@ -224,8 +224,17 @@ const TOOL_IO_MAX_CHARS: usize = 8_000;
 fn indent_json(v: &serde_json::Value) -> String {
     let pretty = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
     let mut body: String = pretty.chars().take(TOOL_IO_MAX_CHARS).collect();
-    if pretty.chars().count() > TOOL_IO_MAX_CHARS {
-        body.push_str("\n… [truncated]");
+    let total = pretty.chars().count();
+    if total > TOOL_IO_MAX_CHARS {
+        // Whose limit this is matters: a reader seeing "truncated" next to an
+        // answer reasonably assumes the model was starved. It was not — this
+        // is the export keeping the document readable, the stored trace has
+        // the whole result, and what the *model* saw is `max_tool_result_chars`
+        // (reported separately by the panel when it bites).
+        body.push_str(&format!(
+            "\n… [truncated for this export: {total} → {TOOL_IO_MAX_CHARS} chars. \
+             The model's own limit is `max_tool_result_chars`; the stored trace keeps everything.]"
+        ));
     }
     body.lines()
         .map(|l| format!("  {l}"))
@@ -240,6 +249,23 @@ mod tests {
     use uuid::Uuid;
 
     use crate::storage::{TurnKind, TurnStatus};
+
+    /// The export's own clip must say it is the export's. A reader who sees
+    /// "truncated" beside an answer reasonably assumes the model was starved —
+    /// which is what this was asked during manual testing.
+    #[test]
+    fn export_truncation_names_whose_limit_it_is() {
+        let big = serde_json::json!({ "content": "x".repeat(TOOL_IO_MAX_CHARS * 2) });
+        let out = indent_json(&big);
+        assert!(out.contains("truncated for this export"));
+        assert!(
+            out.contains("max_tool_result_chars"),
+            "must point at the limit that does bound what the model saw"
+        );
+        // Small results are printed whole, with no marker at all.
+        let small = serde_json::json!({ "content": "fits" });
+        assert!(!indent_json(&small).contains("truncated"));
+    }
 
     async fn seed_session(store: &Store) -> Session {
         store
