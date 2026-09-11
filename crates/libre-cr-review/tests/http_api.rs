@@ -548,8 +548,10 @@ async fn provider_capabilities_are_declared_per_kind() {
         "[hidden] { display: none !important; }",
         // The model's output ceiling binds the field, and anything lower is
         // the reviewer's call.
-        "This model emits at most ",
+        "leaves ~",
         "maxTokensEl.setAttribute(\"max\", cap);",
+        // Filling the model's whole output ceiling would starve input room.
+        "SUGGESTED_MAX_TOKENS = 32768",
     ] {
         assert!(page.contains(needle), "config UI must use {needle}");
     }

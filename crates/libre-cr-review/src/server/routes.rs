@@ -1250,20 +1250,36 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   // that is the reviewer's call, not the model's.
   var maxTokensEl = document.getElementById("max_tokens");
   var maxTokensHint = document.getElementById("maxTokensHint");
+  // What to fill in when a model is picked. NOT the model's ceiling: on
+  // Anthropic (and most OpenAI-compatible providers) `input + max_tokens` must
+  // fit the context window, so reserving the whole output ceiling starves the
+  // conversation of input room. This is headroom for a long answer — reasoning
+  // models spend thinking tokens against it — not a budget to claim.
+  var SUGGESTED_MAX_TOKENS = 32768;
   function applyModelMaxOutput(prefill) {
     var cap = modelMaxOutput[modelEl.value] || 0;
-    maxTokensHint.hidden = !cap;
-    if (!cap) {
-      maxTokensEl.removeAttribute("max");
-      return;
+    var ctx = modelContext[modelEl.value] || 0;
+    if (prefill) {
+      var want = cap ? Math.min(cap, SUGGESTED_MAX_TOKENS) : SUGGESTED_MAX_TOKENS;
+      maxTokensEl.value = want;
+    } else if (cap && Number(maxTokensEl.value) > cap) {
+      // Only clamp what the model cannot honour; a deliberate setting stands.
+      maxTokensEl.value = cap;
     }
-    maxTokensEl.setAttribute("max", cap);
-    maxTokensHint.textContent =
-      "This model emits at most " + cap.toLocaleString() + " tokens per answer. Lower is fine.";
-    // Picking a model fills the ceiling in; a page load only clamps a value
-    // the model cannot honour, so a deliberately low setting survives.
-    if (prefill || Number(maxTokensEl.value) > cap) maxTokensEl.value = cap;
+    if (cap) maxTokensEl.setAttribute("max", cap);
+    else maxTokensEl.removeAttribute("max");
+    var parts = [];
+    if (cap) parts.push("model ceiling " + cap.toLocaleString());
+    if (ctx) {
+      var room = ctx - Number(maxTokensEl.value || 0);
+      parts.push("leaves ~" + Math.max(0, room).toLocaleString() + " tokens of input room");
+    }
+    maxTokensHint.hidden = parts.length === 0;
+    maxTokensHint.textContent = parts.length
+      ? parts.join(" · ") + ". This caps one answer; it is not reserved capacity."
+      : "";
   }
+  maxTokensEl.addEventListener("input", function () { applyModelMaxOutput(false); });
   modelEl.addEventListener("input", function () {
     updateDeriveButton();
     applyModelMaxOutput(false);

@@ -379,10 +379,17 @@ API does not state a window; it is never inferred from a model id.
 may *emit in one answer* and is sent to the API as such. `context_tokens` is
 the window holding input and output together — sending it as `max_tokens` is
 rejected by most APIs. The `[limits]` character caps bound what *we* feed in.
-The config UI labels the field "Max tokens (per answer)" for that reason, takes
-a model's stated output ceiling as the input's `max`, and fills it in when a
-model is picked; a lower value is always allowed, since that is the reviewer's
-call, not the model's.
+The config UI labels the field "Max tokens (per answer)" for that reason and
+takes a model's stated output ceiling as the input's `max`.
+
+Picking a model fills in a **suggested** 32,768, not that ceiling. On Anthropic
+— and on most OpenAI-compatible providers — `input + max_tokens` must fit the
+context window, so reserving the full output ceiling starves the conversation
+of input room: 943,718 on a 1,048,576-token model leaves ~105k for everything
+else. The field is headroom for one long answer, not capacity to claim, and
+reasoning models spend thinking tokens against it. The hint states the ceiling
+and the input room the current value leaves; anything lower is the reviewer's
+call, and a deliberate setting survives a reload.
 
 Provider kinds for v2 (`provider.kind` in config):
 
