@@ -500,3 +500,53 @@ async fn config_limits_round_trip_and_reject_out_of_range() {
         .unwrap();
     assert_eq!(still["limits"]["max_tool_result_chars"], 50_000);
 }
+
+/// The subscription provider lists its catalogue without a key and without a
+/// network call — that backend has no `/v1/models` to ask
+/// (`specs/04-review-daemon.md` § ChatGPT subscription provider).
+#[tokio::test]
+async fn chatgpt_provider_lists_its_catalogue_and_offers_sign_in() {
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+
+    let resp = c
+        .post(url(h.addr, "/v1/provider/models"))
+        .bearer_auth(&h.token)
+        .json(&json!({"provider": {"kind": "chatgpt"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let models = body["models"].as_array().unwrap();
+    assert!(!models.is_empty(), "catalogue must not be empty");
+    assert!(models
+        .iter()
+        .any(|m| m["id"].as_str().unwrap_or_default().starts_with("gpt-5")));
+
+    // The config page offers the kind and the sign-in control.
+    let page = c
+        .get(url(h.addr, "/config-ui"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for needle in [
+        "chatgpt (Plus/Pro subscription)",
+        "Sign in with ChatGPT",
+        "/v1/provider/chatgpt/status",
+    ] {
+        assert!(page.contains(needle), "config UI must offer {needle}");
+    }
+
+    // Status is readable and token-guarded.
+    let resp = c
+        .get(url(h.addr, "/v1/provider/chatgpt/status"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401, "status must require the token");
+}

@@ -164,6 +164,24 @@ pub struct DetectedCredentials {
     pub openai: bool,
 }
 
+/// `POST /v1/provider/chatgpt/login` — the URL the user opens to sign in.
+/// The daemon is already listening for the callback when this returns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatGptLoginResponse {
+    pub authorize_url: String,
+}
+
+/// `GET /v1/provider/chatgpt/status`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatGptStatus {
+    pub signed_in: bool,
+    /// The ChatGPT account the stored tokens belong to, when signed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    /// True while a sign-in is waiting on the browser callback.
+    pub pending: bool,
+}
+
 /// One verb in `GET /v1/verbs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerbDescriptor {

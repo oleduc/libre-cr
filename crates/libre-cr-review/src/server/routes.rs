@@ -11,10 +11,10 @@ use axum::{
     Json, Router,
 };
 use libre_cr_common::http_api::{
-    CodeDaemonHealth, CodeDaemonHealthResponse, CreateSessionResponse, DetectedCredentials,
-    ExportResponse, HealthResponse, ListSessionsResponse, ModelsResponse, PairIssueResponse,
-    PairRedeemResponse, SearchHit, SearchResponse, SessionDetailResponse, SessionSummary,
-    VerbDescriptor,
+    ChatGptLoginResponse, ChatGptStatus, CodeDaemonHealth, CodeDaemonHealthResponse,
+    CreateSessionResponse, DetectedCredentials, ExportResponse, HealthResponse,
+    ListSessionsResponse, ModelsResponse, PairIssueResponse, PairRedeemResponse, SearchHit,
+    SearchResponse, SessionDetailResponse, SessionSummary, VerbDescriptor,
 };
 use libre_cr_common::{Selection, PROTOCOL_VERSION};
 use serde::Deserialize;
@@ -81,6 +81,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/provider/models", post(provider_models))
         .route("/v1/provider/detected", get(provider_detected))
+        .route("/v1/provider/chatgpt/login", post(chatgpt_login))
+        .route("/v1/provider/chatgpt/status", get(chatgpt_status))
         .route("/v1/health", get(health))
         .route("/v1/health/code-daemon", get(health_code_daemon))
         .route("/v1/pair", post(pair))
@@ -597,6 +599,50 @@ async fn provider_detected() -> Json<DetectedCredentials> {
     })
 }
 
+/// Start a ChatGPT sign-in: generate PKCE, bind OpenAI's registered callback
+/// port, and hand back the authorize URL. The callback is awaited in the
+/// background so the request returns immediately — the UI polls
+/// `/v1/provider/chatgpt/status` to see it land.
+///
+/// Only ever reached when the user picks this provider kind: nothing falls
+/// back to a subscription (`04-review-daemon.md` § ChatGPT subscription
+/// provider).
+async fn chatgpt_login() -> Result<Json<ChatGptLoginResponse>> {
+    use crate::provider::chatgpt_auth as auth;
+    let pkce = auth::Pkce::generate();
+    let state_param = uuid::Uuid::new_v4().simple().to_string();
+    let url = auth::authorize_url(&pkce.challenge, &state_param);
+    // Bind before returning the URL: if the port is taken, the user must hear
+    // it now, not after signing in to a page whose redirect goes nowhere.
+    let pending = auth::begin_callback(&state_param).await?;
+    let verifier = pkce.verifier;
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        match auth::finish_callback(pending, &client, &verifier).await {
+            Ok(tokens) => {
+                if let Err(e) = auth::save_tokens(&auth::default_token_path(), &tokens) {
+                    tracing::error!(error = %e, "chatgpt sign-in: could not store tokens");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "chatgpt sign-in did not complete"),
+        }
+        auth::clear_pending();
+    });
+    Ok(Json(ChatGptLoginResponse { authorize_url: url }))
+}
+
+async fn chatgpt_status() -> Json<ChatGptStatus> {
+    use crate::provider::chatgpt_auth as auth;
+    let tokens = auth::load_tokens(&auth::default_token_path())
+        .ok()
+        .flatten();
+    Json(ChatGptStatus {
+        signed_in: tokens.is_some(),
+        account_id: tokens.map(|t| t.account_id).filter(|a| !a.is_empty()),
+        pending: auth::sign_in_pending(),
+    })
+}
+
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     // I1: report the real code-daemon state when the CLI wired in the
     // health hook; the mock fallback only exists for in-process tests.
@@ -773,6 +819,7 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     <option value="mock">mock (no network)</option>
     <option value="anthropic">anthropic</option>
     <option value="openai_compat">openai_compat</option>
+    <option value="chatgpt">chatgpt (Plus/Pro subscription)</option>
   </select>
 
   <label for="modelSelect">Model</label>
@@ -805,6 +852,14 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     <label class="inline"><input id="clear_key" type="checkbox" /> Clear the saved key (use the environment variable, or none)</label>
   </div>
   <p id="detectedHint" class="hint" hidden></p>
+
+  <div id="chatgptField" hidden>
+    <p class="hint">Signs in with your own ChatGPT Plus/Pro subscription, the same way OpenAI's
+    Codex CLI does, and spends that subscription instead of API credit. Intended for personal
+    use — not for a shared or hosted daemon.</p>
+    <button type="button" id="chatgptLogin">Sign in with ChatGPT</button>
+    <p id="chatgptStatus" class="hint" aria-live="polite"></p>
+  </div>
 
   <h2>Context limits</h2>
   <p class="lede">Caps on what reaches the model, so a long conversation cannot outgrow its
@@ -928,7 +983,52 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       modelEl.value = modelSelect.value;
     }
   });
-  kindEl.addEventListener("change", updateDetectedHint);
+  // The subscription provider has no key field: it has a sign-in.
+  var chatgptField = document.getElementById("chatgptField");
+  var chatgptStatusEl = document.getElementById("chatgptStatus");
+  var apiKeyField = document.getElementById("apiKeyField");
+  var chatgptPoll = null;
+  function refreshChatgptStatus() {
+    return fetch("/v1/provider/chatgpt/status", { headers: headers }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (st) {
+      if (st.signed_in) {
+        chatgptStatusEl.textContent = "✓ signed in" + (st.account_id ? " (" + st.account_id + ")" : "");
+      } else if (st.pending) {
+        chatgptStatusEl.textContent = "waiting for the browser…";
+      } else {
+        chatgptStatusEl.textContent = "signed out";
+      }
+      // Stop polling once the sign-in settles either way.
+      if (!st.pending && chatgptPoll) { clearInterval(chatgptPoll); chatgptPoll = null; }
+      return st;
+    }).catch(function () { chatgptStatusEl.textContent = "status unavailable"; });
+  }
+  function updateProviderFields() {
+    var isChatgpt = kindEl.value === "chatgpt";
+    chatgptField.hidden = !isChatgpt;
+    apiKeyField.hidden = isChatgpt;
+    if (isChatgpt) refreshChatgptStatus();
+    updateDetectedHint();
+  }
+  document.getElementById("chatgptLogin").addEventListener("click", function () {
+    chatgptStatusEl.textContent = "starting…";
+    fetch("/v1/provider/chatgpt/login", { method: "POST", headers: headers }).then(function (r) {
+      return r.json().then(function (b) { return { ok: r.ok, body: b }; });
+    }).then(function (res) {
+      if (!res.ok) {
+        // A port clash is the common one, and it has to be readable.
+        chatgptStatusEl.textContent = (res.body && res.body.message) || "sign-in could not start";
+        return;
+      }
+      window.open(res.body.authorize_url, "_blank", "noopener");
+      chatgptStatusEl.textContent = "waiting for the browser…";
+      if (chatgptPoll) clearInterval(chatgptPoll);
+      chatgptPoll = setInterval(refreshChatgptStatus, 2000);
+    }).catch(function () { chatgptStatusEl.textContent = "sign-in could not start"; });
+  });
+  kindEl.addEventListener("change", updateProviderFields);
 
   fetch("/v1/provider/detected", { headers: headers }).then(function (r) {
     if (!r.ok) throw new Error("HTTP " + r.status);
@@ -945,6 +1045,7 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   }).then(function (cfg) {
     var p = cfg.provider || {};
     kindEl.value = p.kind || "mock";
+    updateProviderFields();
     modelEl.value = p.model || "";
     document.getElementById("max_tokens").value = p.max_tokens || 4096;
     document.getElementById("temperature").value = p.temperature != null ? p.temperature : 0;

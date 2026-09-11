@@ -328,6 +328,24 @@ extension has never populated — the tool has always returned an empty list to
 the model. Filed rather than folded into this feature, because scraping every
 comment into the session row is a payload decision of its own.
 
+## 2026-09-11 — ChatGPT subscription provider built
+
+Specified in the entry's own commit, then implemented against it. Two things
+the implementation changed, both recorded in place in `04`:
+
+| Spec | Old | New | |
+|---|---|---|---|
+| `04` § ChatGPT subscription provider → Tokens | Token file "encrypted with the same install key as `api_key_enc`" | Plain JSON at `0600`, with the reason: the install key sits in the same directory on the same disk, so encrypting there is obfuscation; `api_key_enc` is encrypted because `review.toml` is a file people open and paste | Corrected |
+| `04` § ChatGPT subscription provider → Requests | (silent on sampling parameters) | `temperature` and the token cap are not sent — the reasoning models this backend serves reject them | New |
+
+Also sharpened from implementation: the streaming *item* id is not the tool
+*call* id, and addressing a result to the wrong one breaks the tool loop
+silently. That distinction is now in the spec because it is the kind of thing
+that is obvious for an hour and invisible afterwards.
+
+The status marker moved from "specified, not built" to "built" in the same
+change as the code, which is the practice this record exists to enforce.
+
 ## What this record does not cover
 
 - **Nothing was verified by running the system.** The audit and these

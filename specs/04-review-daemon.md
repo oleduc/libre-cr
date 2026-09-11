@@ -364,7 +364,8 @@ Configuration includes:
 
 ## ChatGPT subscription provider
 
-> **Status: specified, not built.**
+> **Status: built.** Specified first, then implemented; the two deviations the
+> implementation forced are marked below.
 
 A reviewer with a ChatGPT Plus/Pro subscription can sign in and spend that
 subscription instead of API credit. This is the same flow OpenAI's own Codex
@@ -400,8 +401,14 @@ falling back.
 
 Stored as `~/.config/libre-cr/chatgpt-auth.json`, mode `0600`, holding
 `{ access, refresh, expires_ms, account_id }`. `account_id` is read from the
-id-token claims at exchange time. The file sits beside the daemon's other
-secrets and is encrypted with the same install key as `api_key_enc`.
+id-token claims at exchange time.
+
+**Deviation:** the tokens are *not* encrypted with the install key, as first
+specified. The install key lives in the same directory on the same disk, so
+encrypting there buys obfuscation, not protection. `api_key_enc` is encrypted
+for a different reason — it sits inside `review.toml`, a file users open, paste
+and share — which does not apply to a dedicated `0600` file. This also matches
+what Codex CLI does with the same tokens.
 
 If the user already runs Codex CLI, `~/.codex/auth.json` holds the same shape.
 The daemon does **not** read it: an interactive sign-in makes the daemon's
@@ -418,11 +425,17 @@ stored tokens and surfaces "signed out" rather than retrying.
 The subscription backend speaks the **Responses API**, so this provider is a
 separate implementation, not a variant of `openai_compat`:
 
-- Base URL `https://chatgpt.com/backend-api/wham` (was `.../codex`; confirmed at implementation time), path `/responses`.
-- Headers: `Authorization: Bearer <access>`, `ChatGPT-Account-Id: <account_id>`, and an `originator`.
-- The system prompt goes in `instructions`, not as a message; message content parts are typed `input_text`, not `text`; `store: false` is mandatory.
+- Base URL `https://chatgpt.com/backend-api/wham`, path `/responses`. Overridable by the endpoint field, since OpenAI has renamed this path before (it was `.../codex`).
+- Headers: `Authorization: Bearer <access>`, `ChatGPT-Account-Id: <account_id>`, and `originator: libre_cr` — this client's own name, not a borrowed one.
+- The system prompt goes in `instructions`, not as a message; message content parts are typed `input_text` / `output_text`, not `text`; `store: false` is mandatory.
+- Tool calls are `function_call` items addressed by `call_id`, and results are `function_call_output` items carrying the same id. The streaming item id is *not* the call id; conflating them silently breaks the tool loop.
 - Tool schemas are flat (`{ type: "function", name, description, parameters }`) rather than nested under `function`.
-- Streaming events are Responses-API events (`response.output_text.delta`, function-call argument deltas, a terminal `response.completed` carrying usage), mapped onto the same `StreamEvent` the rest of the daemon already consumes — so the agent loop, the caps, and the panel need no changes.
+- Streaming events are Responses-API events (`response.output_text.delta`, function-call argument deltas keyed by item id, a terminal `response.completed` carrying usage), mapped onto the same `StreamEvent` the rest of the daemon already consumes — so the agent loop, the caps, and the panel need no changes. Buffered calls are flushed on early EOF, the same guarantee the other two providers give.
+
+**Deviation:** `temperature` and the token cap are not sent. The reasoning
+models this subscription serves reject sampling parameters, so the config's
+values apply to every other kind and are ignored here rather than producing a
+400 on every turn.
 
 ### Models
 

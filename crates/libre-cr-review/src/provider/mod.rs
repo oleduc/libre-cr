@@ -1,10 +1,13 @@
 //! Provider abstraction. Mirrors `specs/04-review-daemon.md` § LLM Provider Layer.
 
 mod anthropic;
+mod chatgpt;
+pub mod chatgpt_auth;
 mod mock;
 mod openai_compat;
 
 pub use anthropic::AnthropicProvider;
+pub use chatgpt::ChatGptProvider;
 pub use mock::MockProvider;
 pub use openai_compat::OpenAICompatProvider;
 
@@ -179,6 +182,17 @@ pub fn build_provider(cfg: &Config, install_key: &InstallKey) -> Result<Arc<dyn 
                 cfg.provider.temperature,
             )
             .with_endpoint(cfg.provider.endpoint.clone());
+            Ok(Arc::new(p))
+        }
+        // Never reached by fallback: `chatgpt` is only ever selected
+        // explicitly (see `04-review-daemon.md` § ChatGPT subscription
+        // provider — personal use, so nothing may drift into it).
+        "chatgpt" => {
+            let p = ChatGptProvider::new(
+                cfg.provider.model.clone(),
+                chatgpt_auth::default_token_path(),
+            )
+            .with_base(cfg.provider.endpoint.clone());
             Ok(Arc::new(p))
         }
         other => Err(Error::Validation(format!("unknown provider kind: {other}"))),
