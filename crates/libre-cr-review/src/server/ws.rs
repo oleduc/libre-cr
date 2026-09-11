@@ -14,9 +14,7 @@ use futures::{stream::SplitSink, SinkExt, StreamExt};
 use libre_cr_common::ws_frames::{AskInit, ClientFrame, ServerFrame};
 use tokio::sync::Mutex;
 
-use crate::agent::{
-    persist_cancelled, persist_failed, run_turn, FrameSink, TurnContext, TurnInput,
-};
+use crate::agent::{persist_cancelled, run_turn, FrameSink, TurnContext, TurnInput};
 use crate::error::{Error, Result};
 use crate::tools::code_daemon::CodeDaemonClient;
 use crate::tools::internal::InternalContext;
@@ -269,12 +267,10 @@ async fn handle_ws(state: AppState, session_id: String, ws: WebSocket) -> Result
         r = &mut agent_fut => {
             if let Err(e) = &r {
                 // A failed turn used to vanish: nothing logged and no row, so
-                // the only evidence was the error frame in the browser.
+                // the only evidence was the error frame in the browser. The
+                // row itself is written by `run_turn`, which is the only place
+                // that still holds the turn's traces and token usage.
                 tracing::error!(error = %e, session_id = %session_id, "turn failed");
-                let partial_text = partial.lock().await.clone();
-                if let Err(pe) = persist_failed(&ctx, &cancel_input, partial_text).await {
-                    tracing::warn!(error = %pe, "persist failed turn");
-                }
             }
             r
         }
