@@ -18,7 +18,7 @@ pub fn internal_tool_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "get_pr_diff".into(),
-            description: "The PR's changes (base branch → PR head) as structured per-file hunks, computed on the prepared checkout. Optional `paths` narrows it to specific files — do that for large PRs.".into(),
+            description: "The PR's changes (base branch → PR head) as structured per-file hunks, computed on the prepared checkout. Optional `paths` narrows it to specific files. On a large PR, calling this without `paths` returns a file *manifest* instead of content (`files_only: true`, each file with its size) — read it, then call again with the paths worth reading.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

@@ -729,12 +729,20 @@ mod tests {
             ),
             // Shapes seen from this backend that the first cut missed, and
             // reported as a bare "chatgpt stream error" instead.
-            (r#"{"type":"error","error":{"message":"bad tool schema"}}"#, "bad tool schema"),
-            (r#"{"type":"error","detail":"Unsupported parameter: x"}"#, "Unsupported parameter"),
+            (
+                r#"{"type":"error","error":{"message":"bad tool schema"}}"#,
+                "bad tool schema",
+            ),
+            (
+                r#"{"type":"error","detail":"Unsupported parameter: x"}"#,
+                "Unsupported parameter",
+            ),
         ] {
             let out = drain(&[payload]);
             assert!(
-                out.iter().any(|e| matches!(e, Ok(StreamEvent::Error { message }) if message.contains(needle))),
+                out.iter().any(
+                    |e| matches!(e, Ok(StreamEvent::Error { message }) if message.contains(needle))
+                ),
                 "expected {needle} from {payload}"
             );
         }

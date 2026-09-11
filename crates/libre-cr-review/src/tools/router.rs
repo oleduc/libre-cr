@@ -38,6 +38,53 @@ const AGENT_HIDDEN_CODE_TOOLS: &[&str] = &[
     "clone_repo",
 ];
 
+/// Above this, an unnarrowed diff is answered with a file manifest instead of
+/// its content.
+///
+/// Measured on a real PR: 73 files, 643,463 chars of JSON, of which the model
+/// received the first 20,000 — three percent, cut mid-structure, most of it
+/// `uv.lock` and CI workflow churn because the files arrive in path order. A
+/// manifest of the same PR is a few thousand chars and tells the model what it
+/// is choosing between, which is what it actually needs before it can pass
+/// `paths`. Truncate-and-tell, one level up: the answer to "too big" is a
+/// smaller *useful* thing, not the first slice of a large one.
+const DIFF_MANIFEST_THRESHOLD_CHARS: usize = 60_000;
+
+/// Replace a too-large diff with the list of files in it, each with its status
+/// and size, plus a note saying how to ask for content.
+fn manifest_if_huge(diff: serde_json::Value) -> serde_json::Value {
+    let size = diff.to_string().chars().count();
+    if size <= DIFF_MANIFEST_THRESHOLD_CHARS {
+        return diff;
+    }
+    let Some(files) = diff.get("files").and_then(|f| f.as_array()) else {
+        return diff;
+    };
+    let listed: Vec<serde_json::Value> = files
+        .iter()
+        .map(|f| {
+            let hunks = f.get("hunks").and_then(|h| h.as_array());
+            serde_json::json!({
+                "path": f.get("path").or_else(|| f.get("file")).cloned().unwrap_or(serde_json::Value::Null),
+                "status": f.get("status").cloned().unwrap_or(serde_json::Value::Null),
+                "hunks": hunks.map(|h| h.len()).unwrap_or(0),
+                "chars": f.to_string().chars().count(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "files_only": true,
+        "total_chars": size,
+        "files": listed,
+        "note": format!(
+            "This PR's full diff is {size} chars — too large to return, and far larger than one \
+             tool result may hold. Listed above is every changed file with its size. Call \
+             get_pr_diff again with `paths` set to the files you actually need; lockfiles, \
+             generated files and CI config are usually not among them."
+        ),
+    })
+}
+
 pub struct ToolRouter {
     code: Arc<dyn CodeDaemonClient>,
     internal: InternalContext,
@@ -145,10 +192,18 @@ impl ToolRouter {
             "to_ref": "HEAD",
             "merge_base": true,
         });
-        if let Some(paths) = input.get("paths") {
-            args["paths"] = paths.clone();
+        let narrowed = input
+            .get("paths")
+            .and_then(|p| p.as_array())
+            .is_some_and(|a| !a.is_empty());
+        if narrowed {
+            args["paths"] = input["paths"].clone();
         }
-        self.code.call("git_diff", args).await
+        let diff = self.code.call("git_diff", args).await?;
+        if narrowed {
+            return Ok(diff);
+        }
+        Ok(manifest_if_huge(diff))
     }
 
     async fn dispatch_inner(&self, call: &ToolCall) -> Result<serde_json::Value> {
@@ -231,6 +286,38 @@ fn schema_has_property(schema: &serde_json::Value, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// An unnarrowed diff on a big PR comes back as a manifest, not as the
+    /// first 3% of a JSON blob. Measured: 73 files, 643,463 chars, of which
+    /// the model saw 20,000 — mostly `uv.lock` and CI churn, because files
+    /// arrive in path order.
+    #[test]
+    fn a_huge_diff_is_answered_with_a_file_manifest() {
+        let file = |path: &str, bytes: usize| {
+            serde_json::json!({
+                "path": path,
+                "status": "modified",
+                "hunks": [{"header": "@@", "lines": ["+".repeat(bytes)]}],
+            })
+        };
+        let huge = serde_json::json!({"files": [
+            file("uv.lock", 40_000),
+            file("src/oauth/authorization_code.py", 30_000),
+        ]});
+        let out = manifest_if_huge(huge);
+        assert_eq!(out["files_only"], true);
+        assert_eq!(out["files"].as_array().unwrap().len(), 2);
+        assert_eq!(out["files"][0]["path"], "uv.lock");
+        // Sizes are what let the model choose; the note says how to ask.
+        assert!(out["files"][0]["chars"].as_u64().unwrap() > 40_000);
+        assert!(out["note"].as_str().unwrap().contains("`paths`"));
+        // No content: that is the whole point.
+        assert!(!out.to_string().contains("@@"));
+
+        // A small diff is returned untouched, manifest machinery invisible.
+        let small = serde_json::json!({"files": [file("a.rs", 10)]});
+        assert_eq!(manifest_if_huge(small.clone()), small);
+    }
+
     use super::*;
     use crate::storage::Store;
     use crate::tools::code_daemon::MockCodeDaemonClient;

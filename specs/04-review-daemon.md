@@ -305,8 +305,12 @@ The presentation-tool category is only registered for turns that have an active 
 
 ## Internal Tools (Detailed)
 
-- **`get_pr_diff`** `{ paths?: string[] }` → `{ files: [{ path, status, hunks }] }`
+- **`get_pr_diff`** `{ paths?: string[] }` → `{ files: [{ path, status, hunks }] }`, or a manifest
   Computed by the router as a three-dot `git_diff` (`merge_base: true`) against `origin/<base>...HEAD` on the session's worktree; the scraped payload is only the fallback when no worktree or base branch is known. No `additions` / `deletions` counts. `paths` narrows it, and narrowing matters — see `10-grounding-and-context.md` § The context budget.
+
+  **Called without `paths` on a large PR, it answers with a file manifest instead of content**: `{ files_only: true, total_chars, files: [{ path, status, hunks, chars }], note }`. The threshold is 60,000 chars of serialized diff.
+
+  Measured on a real PR: 73 files, 643,463 chars, of which the model received the first 20,000 — three percent, cut mid-JSON, and mostly `uv.lock` and CI workflow churn because files arrive in path order. The model recovered by issuing scoped `git_diff` calls, but nothing had told it what it was choosing between. A manifest of that PR is a few thousand chars and answers exactly that question. This is truncate-and-tell one level up: when a result is too big, the useful answer is a smaller *complete* thing, not the first slice of a large one.
 
 - **`get_pr_comments`** `{}` → `{ comments: [{ thread_id, comment_id, author, body, anchor, file?, line?, start_line?, side?, resolved, resolved_by?, created_at? }], total, truncated }`
   Existing **review** comments — the threads on the diff. Top-level
