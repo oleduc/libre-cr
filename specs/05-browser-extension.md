@@ -137,10 +137,11 @@ type Selection =
 
 ### Review-comment selection
 
-> **Status: specified, not built.** Written before the implementation, unlike
-> most of what follows a testing round. The selectors below were read off a
-> live PR page rather than guessed — see the table — but nothing here has run
-> yet.
+> **Status: built.** Specified before the implementation — unlike most of what
+> follows a testing round — then built against it. The two cases the design
+> called out as unobserved (a thread with replies, a resolved thread) were
+> checked on live PRs before the code landed; see § What the live check
+> changed.
 
 A reviewer can pick a **GitHub review comment** — one of the threads that
 annotate a source line in the diff — and ask about it: *"is this concern
@@ -178,9 +179,19 @@ React rewrites `className`; created on demand from a delegated `mouseover`
 rather than pre-injected, because comment threads are **virtualized** — only
 the mounted file's threads exist in the DOM at all.
 
-**Verified selectors** (read from a live PR, 2026-09-10; CSS-module class
-names such as `ReviewThread-module__…` are build-hashed and must never be
-used):
+**Both tabs are supported**, and they are different DOMs — the same split as
+everywhere else in `selectors.ts`. The Conversation tab is the classic
+server-rendered markup: a thread is `.js-resolvable-timeline-thread-container`,
+comments are `id="discussion_r<databaseId>"`, the path is the header link's
+text, and the thread carries **its own diff hunk** whose *last* numbered row is
+the annotated line (`td.blob-num[data-line-number]`; `blob-num-deletion` = old
+side). A resolved thread there is collapsed behind `data-deferred-content-url`
+with no body in the DOM, so it yields no selection — the same practical limit
+as the changes tab, by a different mechanism.
+
+**Verified selectors** for the React changes UI (read from a live PR,
+2026-09-10; CSS-module class names such as `ReviewThread-module__…` are
+build-hashed and must never be used):
 
 | What | Selector | Verified value |
 |---|---|---|
@@ -196,23 +207,48 @@ An earlier draft of this design walked backwards to the previous row and got
 `35` for a comment the API places on `36`; the thread row carries the correct
 number itself.
 
-Two things are designed but unobserved, and should be checked when
-implementing: a thread with **replies** (the specimen had exactly one comment,
-one header, one body), and a **resolved** thread (the specimen was unresolved;
-`[data-testid="unified-comment-resolve-button"]` exists as a control).
-
 Body text is capped at capture like other selection text (4,000 chars), and
 the daemon quotes it fenced under the same 2,000-char cap it already applies —
-no new knob.
+no new knob. The daemon renders the thread as `@author: body` blocks under a
+`[Selection: review comment on line N (old|new side) in <file>]` header.
+
+#### What the live check changed
+
+The design named two unobserved cases. Both were checked before the code
+landed, on PRs picked for having them (2026-09-10):
+
+- **A thread with replies** — verified on a Kubernetes PR: two comments, two
+  `id="r<databaseId>"` roots in document order (oldest first, ascending ids),
+  one `.markdown-body` and one `[data-testid="avatar-link"]` each. The thread's
+  own `tr` carried `data-line-number="360"` / `data-diff-side="right"`, matching
+  the payload's `R360`. Every assumption in the design held.
+- **A resolved thread** — *it is not in the DOM at all.* The changes UI renders
+  only unresolved threads: a PR with 13 resolved reply threads had zero thread
+  elements with the annotated file on screen, and our own PR rendered exactly
+  its one unresolved anchored thread. So the hover affordance reaches
+  unresolved threads only, and `Selection` carries no `resolved` field —
+  nothing selectable is resolved. Resolved threads reach the model the other
+  way, through `get_pr_comments`, which reads the payload and does see them.
+
+The affordance is mounted whether or not the Q&A panel is open — the panel
+opens on selecting a comment. Requiring the panel first would defeat the
+gesture, whose point is to start from the comment.
+
+One case the design missed entirely: a **file-level** review comment
+(`markersMap` key `FILE`) renders as a thread with no diff row, so it yields no
+`file:line` anchor and therefore no `Selection`. The affordance computes the
+selection on hover and stays hidden when there is none, rather than offering a
+control whose click does nothing. Selecting a file-level comment would need
+`Selection` to allow a missing `line`; that is not built.
 
 Separately from selection, the scraper captures **all** review comments into
 `pr_data.comments` for `get_pr_comments` (`04-review-daemon.md` § Internal
 Tools). That path reads the embedded page payload
 (`script[type="application/json"][data-target="react-app.embeddedData"]`),
 joining `markers.threads` with each `diffSummaries[].markersMap` for the
-anchor, because virtualization makes the DOM an unreliable source for a
-whole-PR list. Selection uses the DOM instead: it needs the element the
-reviewer is hovering, which is by definition mounted.
+anchor, because the DOM holds neither the virtualized threads nor the resolved
+ones. Selection uses the DOM instead: it needs the element the reviewer is
+hovering, which is by definition mounted.
 
 The selection is sticky — it persists until cleared or replaced. The Q&A panel header shows the current selection ("`src/auth.ts:42-48` selected · [×]"). Asking a question without a selection is allowed (it's just "ask about this PR").
 

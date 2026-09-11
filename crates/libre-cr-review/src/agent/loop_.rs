@@ -7,7 +7,7 @@ use std::time::Instant;
 use chrono::Utc;
 use futures::StreamExt;
 use libre_cr_common::ws_frames::UsageTally;
-use libre_cr_common::Selection;
+use libre_cr_common::{Selection, Side};
 use uuid::Uuid;
 
 use crate::config::Limits;
@@ -149,21 +149,41 @@ fn build_user_message(question: &str, selection: Option<&Selection>) -> Message 
                 Selection::Symbol {
                     identifier, line, ..
                 } => format!("symbol `{identifier}` (line {line})"),
+                Selection::Comment { line, side, .. } => format!(
+                    "review comment on line {line} ({} side)",
+                    match side {
+                        Side::Left => "old",
+                        Side::Right => "new",
+                    }
+                ),
             },
             s.file()
         ));
         // The exact selected text, so "this line" can never mean another line.
+        // A comment selection quotes the thread instead — the concern itself
+        // is the evidence, and the anchor above says where it points.
         let snippet = match s {
             Selection::Line { text, .. }
             | Selection::Range { text, .. }
-            | Selection::Symbol { text, .. } => text.as_deref(),
+            | Selection::Symbol { text, .. } => text.clone(),
+            Selection::Comment { comments, .. } => Some(
+                comments
+                    .iter()
+                    .map(|c| format!("@{}: {}", c.author, c.body))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            ),
+        };
+        let label = match s {
+            Selection::Comment { .. } => "The selected review thread is",
+            _ => "The selected text is",
         };
         if let Some(snippet) = snippet.filter(|t| !t.trim().is_empty()) {
             let mut clipped: String = snippet.chars().take(2000).collect();
             if snippet.chars().count() > 2000 {
                 clipped.push('…');
             }
-            text.push_str(&format!("The selected text is:\n```\n{clipped}\n```\n"));
+            text.push_str(&format!("{label}:\n```\n{clipped}\n```\n"));
         }
     }
     text.push_str(question);
@@ -889,6 +909,37 @@ mod tests {
         assert!(text.contains("[Selection: line 38 in src/a.rs]"));
         assert!(text.contains("ConditionalCheckFailedException"));
         assert!(text.contains("What is this for?"));
+    }
+
+    #[test]
+    fn user_message_quotes_the_whole_review_thread() {
+        let sel = libre_cr_common::Selection::Comment {
+            comment_id: "3872880867".into(),
+            file: "src/a.rs".into(),
+            line: 36,
+            side: libre_cr_common::Side::Left,
+            comments: vec![
+                libre_cr_common::ThreadComment {
+                    author: "coderabbitai[bot]".into(),
+                    body: "This retries forever.".into(),
+                },
+                libre_cr_common::ThreadComment {
+                    author: "oleduc".into(),
+                    body: "Intentional — the caller bounds it.".into(),
+                },
+            ],
+        };
+        let msg = build_user_message("Is this concern valid?", Some(&sel));
+        let ContentBlock::Text { text } = &msg.content[0] else {
+            panic!("expected text");
+        };
+        // The old side must say so: resolving line 36 against the new file
+        // would read a different line.
+        assert!(text.contains("[Selection: review comment on line 36 (old side) in src/a.rs]"));
+        // The reply is where the answer usually lives — it must survive.
+        assert!(text.contains("@coderabbitai[bot]: This retries forever."));
+        assert!(text.contains("@oleduc: Intentional — the caller bounds it."));
+        assert!(text.contains("Is this concern valid?"));
     }
 
     use super::*;

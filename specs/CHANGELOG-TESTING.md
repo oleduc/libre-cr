@@ -365,6 +365,37 @@ beyond what either certification round reviewed.
   *Trigger: found while designing review-comment selection; fixed in its own PR
   first. Specs: 04 § Internal Tools; 05 § Review-comment selection.*
 
+- **Review-comment selection.** A reviewer can hover a review thread in the
+  diff, click "Ask about this", and ask a question with the thread as context:
+  the whole thread (replies included), plus the `file`, `line` and diff `side`
+  it annotates. The daemon quotes it as `@author: body` blocks under a
+  `[Selection: review comment on line N (old|new side) in <file>]` header, so
+  the model gets the concern *and* where it points, and can go read that code.
+
+  The gesture is a hover affordance rather than a modifier-click: a comment
+  body is full of links, `Reply` and `Resolve`. The button is a single element
+  on `documentElement`, positioned `fixed` from the thread's rect — outside
+  React's tree, so a re-render cannot strip it and nothing needs re-injecting.
+
+  Both tabs work, and they are different DOMs: the Conversation tab is the
+  classic markup (`.js-resolvable-timeline-thread-container`,
+  `id="discussion_r<databaseId>"`, path from the header link, line from the
+  thread's own hunk's last numbered row). Manual testing found this the hard
+  way — the first cut handled only the changes tab, and the affordance was also
+  mounted only while the Q&A panel was open, so with the panel collapsed
+  nothing appeared anywhere. Selecting a comment now opens the panel.
+
+  Two things the spec had flagged as designed-but-unobserved were checked on
+  live PRs first. A thread with replies behaved exactly as designed. A resolved
+  thread turned out not to exist in the DOM at all — the changes UI renders
+  only unresolved threads — so selection reaches unresolved threads only, and
+  `Selection` carries no resolved state. A third case the spec had missed,
+  file-level comments, renders as a thread with no diff row and therefore no
+  anchor; the affordance computes the selection on hover and stays hidden when
+  there is none, rather than offering a control whose click does nothing.
+  *Trigger: requested feature, specified then built. Specs: 05 § Selection
+  Model, § Review-comment selection; 04 § Ask; 10 § Evidence on the wire.*
+
 ---
 
 ## Findings log (certification flags and field bugs, in order found)

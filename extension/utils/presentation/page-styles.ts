@@ -24,6 +24,14 @@ tr[data-libre-cr-tag="highlight"] .libre-cr-label {
   opacity: 0.92; user-select: none; pointer-events: none;
 }
 html.libre-cr-hide-labels .libre-cr-label { display: none; }
+/* Review-thread hover affordance: one fixed button, positioned from the
+   thread's rect (see github/gh-selection.ts). */
+button[data-libre-cr-tag="ask"] {
+  position: fixed; z-index: 2147483000; padding: 3px 9px; border: 1px solid #d1d9e0;
+  border-radius: 6px; background: #f6f8fa; color: #1f2328; cursor: pointer;
+  font: 600 11px/16px system-ui, -apple-system, sans-serif; box-shadow: 0 1px 3px rgba(31,35,40,0.12);
+}
+button[data-libre-cr-tag="ask"]:hover { background: #eaeef2; }
 tr[data-libre-cr-tag="flash"] > td { animation: libre-cr-flash 1.4s ease-out; }
 @keyframes libre-cr-flash { 0%, 40% { background: rgba(9, 105, 218, 0.35); } 100% { background: transparent; } }
 `;

@@ -24,6 +24,9 @@
 // same encoding for its first line. That is the identical R/L convention the
 // diff URL hash uses (see `gh-selection.ts`).
 
+import type { Selection } from "../selection";
+import { FILE_CONTAINER_SEL, filePathOf } from "./diff";
+
 /** One review comment, flattened with its thread's anchor. */
 export interface ScrapedComment {
   /** GitHub's thread id; comments in one thread share it. */
@@ -183,5 +186,111 @@ export function extractComments(payloadJson: string | null | undefined): Scraped
     comments: out,
     total,
     truncated: out.length < total || pageInfo?.hasNextPage === true,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Selection: reading the one thread the reviewer is pointing at.
+//
+// This half reads the DOM, unlike the payload parse above, and deliberately:
+// selection needs the element under the cursor, which is by definition
+// mounted. Virtualization only breaks the *whole-PR* list.
+
+// Two DOMs again, as everywhere else in this file (see `selectors.ts`): the
+// React "changes" UI renders a thread as `[data-testid="review-thread"]` with
+// `id="r<databaseId>"` per comment, and the classic Conversation tab renders
+// it as `.js-resolvable-timeline-thread-container` with
+// `id="discussion_r<databaseId>"` per comment and its own diff hunk. Both were
+// read off live PRs (2026-09-10). CSS-module class names in the React UI
+// (`ReviewThread-module__…`) are build-hashed — never selectors.
+export const THREAD_SEL =
+  '[data-testid="review-thread"], .js-resolvable-timeline-thread-container';
+const COMMENT_ID = /^(?:r|discussion_r)(\d+)$/;
+/** Same cap the other selection variants use for captured text. */
+const MAX_SELECTION_BODY_CHARS = 4_000;
+
+function authorOf(el: Element): string {
+  const byText = el.querySelector("a.author")?.textContent?.trim();
+  if (byText) return byText;
+  const href =
+    el.querySelector('[data-testid="avatar-link"]')?.getAttribute("href") ??
+    el.querySelector('a[href^="/"]')?.getAttribute("href") ??
+    "";
+  const login = href.replace(/^\//, "").split(/[/?#]/)[0];
+  return login || "unknown";
+}
+
+function bodyOf(el: Element): string {
+  const text = (el.querySelector(".markdown-body, .comment-body")?.textContent ?? "").trim();
+  return text.length > MAX_SELECTION_BODY_CHARS
+    ? `${text.slice(0, MAX_SELECTION_BODY_CHARS)}…`
+    : text;
+}
+
+/**
+ * Where the thread points, in the Conversation tab's DOM.
+ *
+ * There is no enclosing diff table there: the thread carries its own hunk, and
+ * the annotated line is its **last** numbered row — the hunk is the context
+ * *above* the comment. The path is the header link's text.
+ */
+function timelineAnchor(thread: Element): { file: string; line: number; side: "left" | "right" } | null {
+  const file = thread.querySelector("a.text-mono")?.textContent?.trim();
+  const cells = thread.querySelectorAll("td.blob-num[data-line-number]");
+  const cell = cells[cells.length - 1];
+  const line = Number(cell?.getAttribute("data-line-number"));
+  if (!file || !Number.isFinite(line) || line <= 0) return null;
+  return { file, line, side: cell?.classList.contains("blob-num-deletion") ? "left" : "right" };
+}
+
+/**
+ * Turn a hovered review thread into a `Selection`.
+ *
+ * Returns `null` unless the thread yields both an anchor (file, line, side)
+ * and at least one comment body — a selection missing either would send the
+ * model a concern it cannot locate, or a location with no concern.
+ */
+export function selectionFromThread(thread: Element): Selection | null {
+  const container = thread.closest(FILE_CONTAINER_SEL);
+  // The thread's *own* row carries the annotated line in the React diff UI. An
+  // earlier design read the preceding code row and was off by one against the
+  // REST API.
+  const cell = thread.closest("tr")?.querySelector("td[data-line-number][data-diff-side]");
+  const anchor = container
+    ? (() => {
+        const file = filePathOf(container);
+        const line = Number(cell?.getAttribute("data-line-number"));
+        if (!file || !Number.isFinite(line) || line <= 0) return null;
+        return {
+          file,
+          line,
+          side: cell?.getAttribute("data-diff-side") === "left" ? ("left" as const) : ("right" as const),
+        };
+      })()
+    : timelineAnchor(thread);
+  if (!anchor) return null;
+  const { file, line, side } = anchor;
+
+  // One element per comment: `id="r<databaseId>"` (React) or
+  // `id="discussion_r<databaseId>"` (Conversation). If that shape ever
+  // changes, fall back to the bodies alone rather than losing the thread.
+  const roots = Array.from(thread.querySelectorAll<HTMLElement>("[id]")).filter((el) =>
+    COMMENT_ID.test(el.id),
+  );
+  const comments = roots.length
+    ? roots.map((el) => ({ author: authorOf(el), body: bodyOf(el) }))
+    : Array.from(thread.querySelectorAll<HTMLElement>(".markdown-body, .comment-body")).map(
+        (el) => ({ author: authorOf(thread), body: bodyOf(el.parentElement ?? el) }),
+      );
+  const kept = comments.filter((c) => c.body.length > 0);
+  if (!kept.length) return null;
+
+  return {
+    kind: "comment",
+    comment_id: COMMENT_ID.exec(roots[0]?.id ?? "")?.[1] ?? "",
+    file,
+    line,
+    side,
+    comments: kept,
   };
 }
