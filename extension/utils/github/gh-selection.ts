@@ -6,6 +6,7 @@
 // decodes with no scraping: hash → path via the rendered diff containers.
 
 import type { Selection } from "../selection";
+import { THREAD_SEL, selectionFromThread } from "./comments";
 import { FILE_CONTAINER_SEL, filePathOf, textOfLines } from "./diff";
 
 const DIFF_HASH = /^#?diff-([0-9a-f]{64})([RL])(\d+)(?:-[RL](\d+))?$/;
@@ -89,5 +90,98 @@ export function watchGithubLineSelection(
   return () => {
     win.removeEventListener("hashchange", apply);
     win.document.removeEventListener("click", afterClick, true);
+  };
+}
+
+/**
+ * Hover affordance for review threads: reveal an "Ask about this" control on
+ * the hovered thread; clicking it selects the thread.
+ *
+ * A modifier-click on the thread itself was rejected — a comment body is full
+ * of links, `Reply` and `Resolve`, so hijacking clicks there is materially
+ * riskier than in a diff cell.
+ *
+ * One button is reused for every thread and lives on `documentElement`,
+ * outside GitHub's React tree: nothing to re-inject when React re-renders a
+ * thread, and no injected node inside a subtree React owns. It is positioned
+ * `fixed` from the thread's rect, so it needs no positioned ancestor — and it
+ * hides on scroll rather than tracking it, since the pointer has to come back
+ * to the thread anyway.
+ */
+export function installCommentAffordance(
+  onSelect: (sel: Selection) => void,
+  doc: Document = document,
+): () => void {
+  let btn: HTMLButtonElement | null = null;
+  let thread: Element | null = null;
+  /** The selection this thread yields, computed when it is hovered. The
+   *  control is only shown when there is one — a file-level thread has no
+   *  diff row, so it produces nothing, and a button that does nothing on
+   *  click is worse than no button. */
+  let pending: Selection | null = null;
+
+  const hide = () => {
+    thread = null;
+    pending = null;
+    if (btn) btn.hidden = true;
+  };
+
+  const button = (): HTMLButtonElement => {
+    if (btn) return btn;
+    const b = doc.createElement("button");
+    b.type = "button";
+    b.textContent = "Ask about this";
+    // Tagged like presentation effects: attributes survive React re-renders,
+    // `className` does not.
+    b.setAttribute("data-libre-cr-tag", "ask");
+    b.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!thread) return;
+      // Recompute: a reply may have landed since the hover.
+      const sel = selectionFromThread(thread) ?? pending;
+      hide();
+      if (sel) onSelect(sel);
+    });
+    doc.documentElement.appendChild(b);
+    btn = b;
+    return b;
+  };
+
+  const over = (ev: Event) => {
+    const target = ev.target as Node | null;
+    const el = target instanceof Element ? target : target?.parentElement;
+    const hovered = el?.closest(THREAD_SEL);
+    if (!hovered) return;
+    if (hovered === thread) return;
+    const sel = selectionFromThread(hovered);
+    if (!sel) {
+      hide();
+      return;
+    }
+    thread = hovered;
+    pending = sel;
+    const b = button();
+    const rect = hovered.getBoundingClientRect();
+    b.style.top = `${Math.max(0, rect.top + 6)}px`;
+    b.style.left = `${Math.max(0, rect.right - 118)}px`;
+    b.hidden = false;
+  };
+
+  const out = (ev: Event) => {
+    const to = (ev as MouseEvent).relatedTarget;
+    if (to instanceof Element && (to === btn || to.closest(THREAD_SEL) === thread)) return;
+    hide();
+  };
+
+  doc.addEventListener("mouseover", over, true);
+  doc.addEventListener("mouseout", out, true);
+  doc.addEventListener("scroll", hide, { capture: true, passive: true });
+  return () => {
+    doc.removeEventListener("mouseover", over, true);
+    doc.removeEventListener("mouseout", out, true);
+    doc.removeEventListener("scroll", hide, true);
+    btn?.remove();
+    btn = null;
   };
 }

@@ -10,7 +10,10 @@ import {
   pickIdentifier,
   textOfLines,
 } from "../utils/github/diff";
-import { watchGithubLineSelection } from "../utils/github/gh-selection";
+import {
+  installCommentAffordance,
+  watchGithubLineSelection,
+} from "../utils/github/gh-selection";
 
 export interface SelectionLayerProps {
   onSelect: (sel: Selection | null) => void;
@@ -95,9 +98,13 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
     // range, both published through the URL hash. Riding it gives multi-line
     // selection for free, with GitHub's native row highlight as feedback.
     const unwatch = watchGithubLineSelection(onSelect);
+    // Review threads get their own gesture: a hover affordance, not a click —
+    // their bodies are interactive (links, Reply, Resolve).
+    const uninstall = installCommentAffordance(onSelect);
     return () => {
       document.removeEventListener("click", click, true);
       unwatch();
+      uninstall();
     };
   }, [enabled, onSelect]);
   return null;

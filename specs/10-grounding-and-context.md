@@ -86,8 +86,11 @@ same principle as quoting the selected line rather than naming it.
 resolving it against the new file would read the wrong line — the identical
 failure mode as quoting the wrong side of a replacement row.
 
-*Specified, not built* — see `05-browser-extension.md` § Review-comment
-selection.
+The thread is quoted as `@author: body` blocks, so a reply — often where the
+answer lives — is in context alongside the concern it answers. Only unresolved
+threads are selectable, because the diff UI renders no others; resolved ones
+reach the model through `get_pr_comments`. See `05-browser-extension.md`
+§ Review-comment selection.
 
 ### Reads are line-numbered
 
