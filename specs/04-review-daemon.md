@@ -382,14 +382,33 @@ rejected by most APIs. The `[limits]` character caps bound what *we* feed in.
 The config UI labels the field "Max tokens (per answer)" for that reason and
 takes a model's stated output ceiling as the input's `max`.
 
-Picking a model fills in a **suggested** 32,768, not that ceiling. On Anthropic
-— and on most OpenAI-compatible providers — `input + max_tokens` must fit the
-context window, so reserving the full output ceiling starves the conversation
-of input room: 943,718 on a 1,048,576-token model leaves ~105k for everything
-else. The field is headroom for one long answer, not capacity to claim, and
-reasoning models spend thinking tokens against it. The hint states the ceiling
-and the input room the current value leaves; anything lower is the reviewer's
-call, and a deliberate setting survives a reload.
+Picking a model fills in a **derived suggestion**, not that ceiling —
+`config::suggested_max_tokens(context_tokens, max_output_tokens)`, returned by
+the same `/v1/limits/derive` route as the character caps, because the answer's
+headroom comes out of the same window:
+
+    8% of the context, floored at 4,096, ceilinged at 32,768,
+    then bounded by the model's stated output ceiling.
+
+| Context | Suggested |
+|---|---|
+| 128,000 | 10,240 |
+| 272,000 | 21,760 |
+| 1,048,576 | 32,768 |
+
+A fraction, because on Anthropic — and most OpenAI-compatible providers —
+`input + max_tokens` must fit the window, so reserving the full output ceiling
+starves the conversation of input room: 943,718 on a 1,048,576-token model
+leaves ~105k for everything else. Floored, because reasoning models spend
+thinking tokens against this and too small a cap truncates an answer before it
+writes a visible word. Ceilinged, because past a point more headroom buys
+nothing — an answer to a review question is not 200k tokens long. The model's
+own ceiling overrides all three: asking for more than it will emit is an error,
+not a preference.
+
+The hint states that ceiling and the input room the current value leaves.
+Anything lower is the reviewer's call, and a deliberate setting survives a
+reload.
 
 Provider kinds for v2 (`provider.kind` in config):
 

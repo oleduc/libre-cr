@@ -332,13 +332,17 @@ impl Config {
 /// denser than prose. The fractions are the ones the hand-tuned defaults
 /// already imply at a 262k window, so deriving on an existing setup reproduces
 /// roughly what is configured today instead of quietly re-tuning it.
-pub fn derive_limits(context_tokens: u64) -> libre_cr_common::http_api::DerivedLimits {
+pub fn derive_limits(
+    context_tokens: u64,
+    max_output_tokens: Option<u64>,
+) -> libre_cr_common::http_api::DerivedLimits {
     const CHARS_PER_TOKEN: f32 = 3.5;
     let chars = context_tokens as f64 * CHARS_PER_TOKEN as f64;
     let part = |fraction: f64, floor: usize| ((chars * fraction) as usize).max(floor);
     libre_cr_common::http_api::DerivedLimits {
         context_tokens,
         chars_per_token: CHARS_PER_TOKEN,
+        max_tokens: suggested_max_tokens(context_tokens, max_output_tokens),
         // Floors keep a tiny window from producing caps the agent loop cannot
         // make progress under (`TOOL_RESULT_FLOOR_CHARS` is 2,000).
         max_tool_result_chars: part(0.020, 4_000),
@@ -346,6 +350,30 @@ pub fn derive_limits(context_tokens: u64) -> libre_cr_common::http_api::DerivedL
         replay_result_chars: part(0.020, 4_000),
         replay_turn_chars: part(0.045, 8_000),
     }
+}
+
+/// Suggested `provider.max_tokens`: headroom for one long answer, bounded by
+/// the window it has to share and by whatever the model will actually emit.
+///
+/// A fraction of the context, because on Anthropic — and most
+/// OpenAI-compatible providers — `input + max_tokens` must fit the window, so
+/// a large reservation starves the conversation of input room. Floored,
+/// because reasoning models spend thinking tokens against this and a small cap
+/// truncates an answer before it writes a visible word. Ceilinged, because
+/// past a point more headroom buys nothing: an answer to a review question is
+/// not 200k tokens long.
+pub fn suggested_max_tokens(context_tokens: u64, max_output_tokens: Option<u64>) -> u32 {
+    const FRACTION: f64 = 0.08;
+    const FLOOR: u64 = 4_096;
+    const CEILING: u64 = 32_768;
+    let want = ((context_tokens as f64 * FRACTION) as u64).clamp(FLOOR, CEILING);
+    // The model's own ceiling wins over every heuristic, including the floor:
+    // asking for more than it will emit is an error, not a preference.
+    let bounded = match max_output_tokens {
+        Some(cap) if cap > 0 => want.min(cap),
+        _ => want,
+    };
+    bounded.max(1) as u32
 }
 
 pub fn expand_path(s: &str) -> PathBuf {
@@ -431,8 +459,27 @@ event = { type = "text_delta", text = "hi" }
     /// near those defaults — otherwise "derive" silently re-tunes a working
     /// setup the first time someone presses it.
     #[test]
+    fn suggested_max_tokens_is_headroom_not_a_claim_on_the_window() {
+        // A big window does not justify a big reservation: input room is the
+        // scarce half, and answers are not 200k tokens long.
+        assert_eq!(suggested_max_tokens(1_048_576, None), 32_768);
+        assert_eq!(suggested_max_tokens(272_000, None), 21_760);
+        assert_eq!(suggested_max_tokens(128_000, None), 10_240);
+        // Floored: a reasoning model needs room to think before it writes.
+        assert_eq!(suggested_max_tokens(16_000, None), 4_096);
+        // The model's stated ceiling beats the heuristic in both directions.
+        assert_eq!(suggested_max_tokens(1_048_576, Some(943_718)), 32_768);
+        assert_eq!(suggested_max_tokens(1_048_576, Some(8_192)), 8_192);
+        assert_eq!(suggested_max_tokens(16_000, Some(2_048)), 2_048);
+        // Whatever happens, it fits the window it shares.
+        for ctx in [8_000u64, 128_000, 272_000, 1_048_576] {
+            assert!((suggested_max_tokens(ctx, None) as u64) < ctx);
+        }
+    }
+
+    #[test]
     fn derived_caps_match_the_hand_tuned_defaults_at_262k() {
-        let d = derive_limits(262_144);
+        let d = derive_limits(262_144, None);
         let l = Limits::default();
         let near = |got: usize, want: usize| {
             let diff = got.abs_diff(want) as f64 / want as f64;
@@ -446,11 +493,11 @@ event = { type = "text_delta", text = "hi" }
 
     #[test]
     fn derived_caps_scale_with_the_window_and_have_floors() {
-        let small = derive_limits(128_000);
-        let big = derive_limits(872_000);
+        let small = derive_limits(128_000, None);
+        let big = derive_limits(872_000, None);
         assert!(small.max_turn_tool_chars < big.max_turn_tool_chars);
         // A toy window still leaves the loop room to make progress.
-        let tiny = derive_limits(4_000);
+        let tiny = derive_limits(4_000, None);
         assert_eq!(tiny.max_tool_result_chars, 4_000);
         assert_eq!(tiny.max_turn_tool_chars, 20_000);
     }

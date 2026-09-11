@@ -200,6 +200,9 @@ impl Default for ProviderCapabilities {
 pub struct DerivedLimits {
     pub context_tokens: u64,
     pub chars_per_token: f32,
+    /// Suggested `provider.max_tokens` — headroom for one answer, not a claim
+    /// on the window. Never above the model's stated output ceiling.
+    pub max_tokens: u32,
     pub max_tool_result_chars: usize,
     pub max_turn_tool_chars: usize,
     pub replay_result_chars: usize,

@@ -550,8 +550,8 @@ async fn provider_capabilities_are_declared_per_kind() {
         // the reviewer's call.
         "leaves ~",
         "maxTokensEl.setAttribute(\"max\", cap);",
-        // Filling the model's whole output ceiling would starve input room.
-        "SUGGESTED_MAX_TOKENS = 32768",
+        // The suggestion comes from the daemon, not a constant in the page.
+        "maxTokensEl.value = d.max_tokens;",
     ] {
         assert!(page.contains(needle), "config UI must use {needle}");
     }
@@ -590,6 +590,23 @@ async fn limits_can_be_derived_from_a_context_window_without_being_stored() {
             > before["limits"]["max_turn_tool_chars"].as_u64().unwrap()
     );
     assert_eq!(derived["context_tokens"], 872_000);
+    // Headroom for one answer, not a claim on the window.
+    assert_eq!(derived["max_tokens"], 32_768);
+
+    // A model's stated output ceiling bounds the suggestion.
+    let bounded: serde_json::Value = c
+        .get(url(
+            h.addr,
+            "/v1/limits/derive?context_tokens=872000&max_output_tokens=8192",
+        ))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(bounded["max_tokens"], 8_192);
 
     let after: serde_json::Value = c
         .get(url(h.addr, "/v1/config"))

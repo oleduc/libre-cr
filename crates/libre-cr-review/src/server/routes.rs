@@ -673,12 +673,19 @@ async fn limits_derive(
     if q.context_tokens == 0 {
         return Err(Error::Validation("context_tokens must be positive".into()));
     }
-    Ok(Json(crate::config::derive_limits(q.context_tokens)))
+    Ok(Json(crate::config::derive_limits(
+        q.context_tokens,
+        q.max_output_tokens,
+    )))
 }
 
 #[derive(Deserialize)]
 struct DeriveQuery {
     context_tokens: u64,
+    /// The model's stated output ceiling, when it has one. Bounds the
+    /// suggested `max_tokens`.
+    #[serde(default)]
+    max_output_tokens: Option<u64>,
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -1250,19 +1257,32 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   // that is the reviewer's call, not the model's.
   var maxTokensEl = document.getElementById("max_tokens");
   var maxTokensHint = document.getElementById("maxTokensHint");
-  // What to fill in when a model is picked. NOT the model's ceiling: on
-  // Anthropic (and most OpenAI-compatible providers) `input + max_tokens` must
-  // fit the context window, so reserving the whole output ceiling starves the
-  // conversation of input room. This is headroom for a long answer — reasoning
-  // models spend thinking tokens against it — not a budget to claim.
-  var SUGGESTED_MAX_TOKENS = 32768;
+  // What to fill in when a model is picked comes from the daemon
+  // (`config::suggested_max_tokens`), not from a constant here: it is the same
+  // policy question as the character caps, and one formula with tests beats
+  // two numbers that drift.
+  function suggestMaxTokens() {
+    var ctx = modelContext[modelEl.value] || 0;
+    var cap = modelMaxOutput[modelEl.value] || 0;
+    if (!ctx && !cap) return;
+    var q = "/v1/limits/derive?context_tokens=" + (ctx || 32768) +
+      (cap ? "&max_output_tokens=" + cap : "");
+    fetch(q, { headers: headers }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (d) {
+      maxTokensEl.value = d.max_tokens;
+      applyModelMaxOutput(false);
+    }).catch(function () { /* leave whatever is there */ });
+  }
   function applyModelMaxOutput(prefill) {
     var cap = modelMaxOutput[modelEl.value] || 0;
     var ctx = modelContext[modelEl.value] || 0;
     if (prefill) {
-      var want = cap ? Math.min(cap, SUGGESTED_MAX_TOKENS) : SUGGESTED_MAX_TOKENS;
-      maxTokensEl.value = want;
-    } else if (cap && Number(maxTokensEl.value) > cap) {
+      suggestMaxTokens();
+      return;
+    }
+    if (cap && Number(maxTokensEl.value) > cap) {
       // Only clamp what the model cannot honour; a deliberate setting stands.
       maxTokensEl.value = cap;
     }
@@ -1289,16 +1309,23 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     var ctx = selectedContext();
     if (!ctx) return;
     if (!window.confirm(
-      "Replace the four character caps below with values sized to a " +
-      ctx.toLocaleString() + "-token context?\n\n" +
+      "Replace the four character caps below — and the max tokens per answer — " +
+      "with values sized to a " + ctx.toLocaleString() + "-token context?\n\n" +
       "This only fills the form — nothing is saved until you press Save."
     )) return;
-    fetch("/v1/limits/derive?context_tokens=" + ctx, { headers: headers }).then(function (r) {
+    var capQ = modelMaxOutput[modelEl.value]
+      ? "&max_output_tokens=" + modelMaxOutput[modelEl.value]
+      : "";
+    fetch("/v1/limits/derive?context_tokens=" + ctx + capQ, { headers: headers }).then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     }).then(function (d) {
       ["max_tool_result_chars", "max_turn_tool_chars", "replay_result_chars", "replay_turn_chars"]
         .forEach(function (k) { document.getElementById(k).value = d[k]; });
+      // The answer's headroom comes out of the same window, so it is part of
+      // the same sizing rather than a separate decision.
+      maxTokensEl.value = d.max_tokens;
+      applyModelMaxOutput(false);
       setStatus("Filled from a " + ctx.toLocaleString() + "-token context at " +
         d.chars_per_token + " chars/token. Review, then Save.", true);
     }).catch(function (e) {
