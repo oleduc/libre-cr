@@ -106,7 +106,9 @@ impl Default for ProviderConfig {
             kind: "mock".into(),
             api_key_enc: String::new(),
             model: "mock-model".into(),
-            max_tokens: 4096,
+            // Same floor as `suggested_max_tokens`: 4,096 can go entirely on
+            // a reasoning model's thinking.
+            max_tokens: 8192,
             // Not zero. Greedy decoding makes a repeated tool call an
             // absorbing state: identical context in, identical call out, and
             // re-running it produces an identical observation. One question
@@ -357,16 +359,19 @@ pub fn derive_limits(
 ///
 /// A fraction of the context, because on Anthropic — and most
 /// OpenAI-compatible providers — `input + max_tokens` must fit the window, so
-/// a large reservation starves the conversation of input room. Floored,
-/// because reasoning models spend thinking tokens against this and a small cap
-/// truncates an answer before it writes a visible word. Ceilinged, because
-/// past a point more headroom buys nothing: an answer to a review question is
-/// not 200k tokens long.
+/// a large reservation starves the conversation of input room. Floored at
+/// 8,192, because reasoning models spend thinking tokens against this and
+/// 4,096 can go entirely on thinking, truncating the answer before it writes a
+/// visible word. Ceilinged, because past a point more headroom buys nothing:
+/// an answer to a review question is not 200k tokens long.
 pub fn suggested_max_tokens(context_tokens: u64, max_output_tokens: Option<u64>) -> u32 {
     const FRACTION: f64 = 0.08;
-    const FLOOR: u64 = 4_096;
+    const FLOOR: u64 = 8_192;
     const CEILING: u64 = 32_768;
     let want = ((context_tokens as f64 * FRACTION) as u64).clamp(FLOOR, CEILING);
+    // The floor must not outgrow the window it shares: on a toy context, half
+    // is already generous.
+    let want = want.min((context_tokens / 2).max(1));
     // The model's own ceiling wins over every heuristic, including the floor:
     // asking for more than it will emit is an error, not a preference.
     let bounded = match max_output_tokens {
@@ -421,7 +426,7 @@ event = { type = "text_delta", text = "hi" }
         let cfg: Config = toml::from_str(toml_src).expect("partial config must parse");
         assert_eq!(cfg.provider.kind, "mock");
         assert_eq!(cfg.provider.model, "mock");
-        assert_eq!(cfg.provider.max_tokens, 4096); // filled from Default
+        assert_eq!(cfg.provider.max_tokens, 8192); // filled from Default
         assert!(cfg.mock.code_intel);
         assert_eq!(cfg.mock.provider_script.len(), 1);
     }
@@ -465,8 +470,12 @@ event = { type = "text_delta", text = "hi" }
         assert_eq!(suggested_max_tokens(1_048_576, None), 32_768);
         assert_eq!(suggested_max_tokens(272_000, None), 21_760);
         assert_eq!(suggested_max_tokens(128_000, None), 10_240);
-        // Floored: a reasoning model needs room to think before it writes.
-        assert_eq!(suggested_max_tokens(16_000, None), 4_096);
+        // Floored: a reasoning model can spend 4,096 on thinking alone, so
+        // the floor leaves room to think *and* answer.
+        assert_eq!(suggested_max_tokens(128_000, None), 10_240);
+        assert_eq!(suggested_max_tokens(64_000, None), 8_192);
+        // …but never more than half a small window.
+        assert_eq!(suggested_max_tokens(16_000, None), 8_000);
         // The model's stated ceiling beats the heuristic in both directions.
         assert_eq!(suggested_max_tokens(1_048_576, Some(943_718)), 32_768);
         assert_eq!(suggested_max_tokens(1_048_576, Some(8_192)), 8_192);

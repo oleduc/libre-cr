@@ -387,11 +387,14 @@ Picking a model fills in a **derived suggestion**, not that ceiling —
 the same `/v1/limits/derive` route as the character caps, because the answer's
 headroom comes out of the same window:
 
-    8% of the context, floored at 4,096, ceilinged at 32,768,
-    then bounded by the model's stated output ceiling.
+    8% of the context, floored at 8,192, ceilinged at 32,768,
+    never more than half the window, then bounded by the model's
+    stated output ceiling.
 
 | Context | Suggested |
 |---|---|
+| 16,000 | 8,000 (half the window) |
+| 64,000 | 8,192 (the floor) |
 | 128,000 | 10,240 |
 | 272,000 | 21,760 |
 | 1,048,576 | 32,768 |
@@ -399,9 +402,10 @@ headroom comes out of the same window:
 A fraction, because on Anthropic — and most OpenAI-compatible providers —
 `input + max_tokens` must fit the window, so reserving the full output ceiling
 starves the conversation of input room: 943,718 on a 1,048,576-token model
-leaves ~105k for everything else. Floored, because reasoning models spend
-thinking tokens against this and too small a cap truncates an answer before it
-writes a visible word. Ceilinged, because past a point more headroom buys
+leaves ~105k for everything else. Floored at 8,192, because reasoning models spend
+thinking tokens against this: 4,096 can go entirely on thinking, truncating the
+answer before it writes a visible word. Capped at half the window besides, so
+the floor cannot outgrow a small context. Ceilinged, because past a point more headroom buys
 nothing — an answer to a review question is not 200k tokens long. The model's
 own ceiling overrides all three: asking for more than it will emit is an error,
 not a preference.
@@ -618,10 +622,10 @@ data_dir = "~/.local/share/libre-cr-review"
 db = "~/.local/share/libre-cr-review/state.db"
 
 [provider]
-kind = "anthropic"             # "mock" | "anthropic" | "openai_compat"; default is "mock"
-api_key_enc = "<encrypted>"    # AES-GCM; empty → fall back to ANTHROPIC_API_KEY / OPENAI_API_KEY env var. Unused by "mock".
+kind = "anthropic"             # "mock" | "anthropic" | "openai_compat" | "chatgpt"; default is "mock"
+api_key_enc = "<encrypted>"    # AES-GCM; empty → fall back to ANTHROPIC_API_KEY / OPENAI_API_KEY env var. Unused by "mock" and "chatgpt".
 model = "claude-sonnet-4-7-20260101"   # placeholder
-max_tokens = 4096
+max_tokens = 8192              # per answer, not the context window; a reasoning model can spend 4k on thinking alone
 temperature = 0.2              # not 0: greedy decoding makes tool-call loops an absorbing state
 endpoint = ""                  # optional override
 
