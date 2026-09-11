@@ -501,28 +501,32 @@ async fn config_limits_round_trip_and_reject_out_of_range() {
     assert_eq!(still["limits"]["max_tool_result_chars"], 50_000);
 }
 
-/// The subscription provider lists its catalogue without a key and without a
-/// network call — that backend has no `/v1/models` to ask
+/// Signed out, the subscription provider says so instead of reaching the
+/// network, and the config page offers the sign-in
 /// (`specs/04-review-daemon.md` § ChatGPT subscription provider).
+///
+/// The token file is pointed at a temp path on purpose: with the default the
+/// test would read the developer's own sign-in and call OpenAI for real.
 #[tokio::test]
-async fn chatgpt_provider_lists_its_catalogue_and_offers_sign_in() {
+async fn chatgpt_provider_reports_signed_out_and_offers_sign_in() {
     let h = common::start_server_default().await;
     let c = reqwest::Client::new();
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = dir.path().join("chatgpt-auth.json");
 
     let resp = c
         .post(url(h.addr, "/v1/provider/models"))
         .bearer_auth(&h.token)
-        .json(&json!({"provider": {"kind": "chatgpt"}}))
+        .json(&json!({"provider": {
+            "kind": "chatgpt",
+            "chatgpt_token_file": token_file.to_str().unwrap(),
+        }}))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    let models = body["models"].as_array().unwrap();
-    assert!(!models.is_empty(), "catalogue must not be empty");
-    assert!(models
-        .iter()
-        .any(|m| m["id"].as_str().unwrap_or_default().starts_with("gpt-5")));
+    // 502 is this daemon's existing mapping for `ProviderUnauthorized` — a
+    // credential problem at the provider, not at our own door (401 is ours).
+    assert_eq!(resp.status(), 502, "signed out must not be reported as success");
 
     // The config page offers the kind and the sign-in control.
     let page = c

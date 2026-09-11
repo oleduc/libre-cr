@@ -6,7 +6,7 @@
 //! registered against that client, so the callback must land on port 1455.
 //! This is the same flow OpenAI's own Codex CLI runs.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -180,10 +180,6 @@ pub fn tokens_from_response(
         expires_ms: now_ms + expires_in * 1000,
         account_id,
     })
-}
-
-pub fn default_token_path() -> PathBuf {
-    crate::config::expand_path("~/.config/libre-cr/chatgpt-auth.json")
 }
 
 /// Read stored tokens. A missing file is "signed out", not an error.

@@ -346,6 +346,23 @@ that is obvious for an hour and invisible afterwards.
 The status marker moved from "specified, not built" to "built" in the same
 change as the code, which is the practice this record exists to enforce.
 
+## 2026-09-11 — the model list was fiction; corrected against the API
+
+| Spec | Old | New | |
+|---|---|---|---|
+| `04` § ChatGPT subscription provider → Models | "That backend exposes no `/v1/models`, so `list_models` returns a built-in catalogue" | `GET {base}/models?client_version=<v>`, with the version gate and its measured behaviour, and an empty list reported as a stale client | Corrected |
+| `04` § ChatGPT subscription provider → Requests | (fixed token path) | `provider.chatgpt_token_file`, so a test run cannot read the developer's own sign-in | New |
+
+Both halves of the old claim were wrong: the endpoint exists, and the
+catalogue shipped model ids (`gpt-5.2-codex`, `gpt-5.1`) that do not exist on
+it — written from training data, not from the API, and never checked against a
+live account. The user found it within a day: "I only see pretty old models".
+
+This is the same failure the grounding spec describes for *answers* — recalled
+detail presented as observed fact — committed in a spec, by the assistant
+writing it. The correction is recorded here rather than quietly patched
+because the pattern matters more than the fix.
+
 ## What this record does not cover
 
 - **Nothing was verified by running the system.** The audit and these

@@ -421,6 +421,9 @@ fn apply_provider_patch(
     if let Some(s) = p.get("endpoint").and_then(|s| s.as_str()) {
         cfg.provider.endpoint = s.to_string();
     }
+    if let Some(s) = p.get("chatgpt_token_file").and_then(|s| s.as_str()) {
+        cfg.provider.chatgpt_token_file = s.to_string();
+    }
     if let Some(s) = p.get("api_key").and_then(|s| s.as_str()) {
         // An explicit empty string clears the saved key (→ env-var fallback).
         cfg.provider.api_key_enc = if s.is_empty() {
@@ -607,8 +610,10 @@ async fn provider_detected() -> Json<DetectedCredentials> {
 /// Only ever reached when the user picks this provider kind: nothing falls
 /// back to a subscription (`04-review-daemon.md` § ChatGPT subscription
 /// provider).
-async fn chatgpt_login() -> Result<Json<ChatGptLoginResponse>> {
+async fn chatgpt_login(State(state): State<AppState>) -> Result<Json<ChatGptLoginResponse>> {
     use crate::provider::chatgpt_auth as auth;
+    let token_path =
+        crate::config::expand_path(&state.config.snapshot().await.provider.chatgpt_token_file);
     let pkce = auth::Pkce::generate();
     let state_param = uuid::Uuid::new_v4().simple().to_string();
     let url = auth::authorize_url(&pkce.challenge, &state_param);
@@ -620,7 +625,7 @@ async fn chatgpt_login() -> Result<Json<ChatGptLoginResponse>> {
         let client = reqwest::Client::new();
         match auth::finish_callback(pending, &client, &verifier).await {
             Ok(tokens) => {
-                if let Err(e) = auth::save_tokens(&auth::default_token_path(), &tokens) {
+                if let Err(e) = auth::save_tokens(&token_path, &tokens) {
                     tracing::error!(error = %e, "chatgpt sign-in: could not store tokens");
                 }
             }
@@ -631,11 +636,11 @@ async fn chatgpt_login() -> Result<Json<ChatGptLoginResponse>> {
     Ok(Json(ChatGptLoginResponse { authorize_url: url }))
 }
 
-async fn chatgpt_status() -> Json<ChatGptStatus> {
+async fn chatgpt_status(State(state): State<AppState>) -> Json<ChatGptStatus> {
     use crate::provider::chatgpt_auth as auth;
-    let tokens = auth::load_tokens(&auth::default_token_path())
-        .ok()
-        .flatten();
+    let path =
+        crate::config::expand_path(&state.config.snapshot().await.provider.chatgpt_token_file);
+    let tokens = auth::load_tokens(&path).ok().flatten();
     Json(ChatGptStatus {
         signed_in: tokens.is_some(),
         account_id: tokens.map(|t| t.account_id).filter(|a| !a.is_empty()),

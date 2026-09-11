@@ -25,16 +25,12 @@ use crate::error::{Error, Result};
 
 const DEFAULT_BASE: &str = "https://chatgpt.com/backend-api/wham";
 
-/// The models a subscription grants. The backend has no `/v1/models`, so this
-/// is a catalogue rather than a lookup — and the model field stays free text
-/// so a list that lags OpenAI's releases never blocks a new id.
-const CATALOGUE: &[(&str, &str)] = &[
-    ("gpt-5.2-codex", "GPT-5.2 Codex"),
-    ("gpt-5.2", "GPT-5.2"),
-    ("gpt-5.1-codex", "GPT-5.1 Codex"),
-    ("gpt-5.1-codex-mini", "GPT-5.1 Codex mini"),
-    ("gpt-5.1", "GPT-5.1"),
-];
+/// Sent as `client_version` on the model list, and the reason that list is
+/// worth fetching rather than hardcoding: the server gates the catalogue on
+/// it. Measured against a live account — `1.0.0` returned 8 models, `0.99.0`
+/// returned 1, `0.80.0` returned none. Raise this as the backend moves on; too
+/// low silently returns fewer models rather than an error.
+const CLIENT_VERSION: &str = "1.0.0";
 
 pub struct ChatGptProvider {
     id: String,
@@ -235,15 +231,75 @@ impl Provider for ChatGptProvider {
         self.access().await.map(|_| ())
     }
 
+    /// Ask the backend what this subscription offers.
+    ///
+    /// An earlier version of this shipped a hardcoded list, which was wrong
+    /// twice over: the endpoint does exist, and a list written from memory
+    /// offered model ids that do not.
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        Ok(CATALOGUE
-            .iter()
-            .map(|(id, name)| ModelInfo {
-                id: (*id).to_string(),
-                display_name: Some((*name).to_string()),
-            })
-            .collect())
+        let tokens = self.access().await?;
+        let resp = self
+            .client
+            .get(format!(
+                "{}/models?client_version={CLIENT_VERSION}",
+                self.base
+            ))
+            .bearer_auth(&tokens.access)
+            .header("ChatGPT-Account-Id", &tokens.account_id)
+            .header("originator", chatgpt_auth::ORIGINATOR)
+            .send()
+            .await
+            .map_err(|e| Error::Internal(format!("chatgpt models request: {e}")))?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::ProviderUnauthorized);
+        }
+        if !resp.status().is_success() {
+            let s = resp.status();
+            let detail: String = resp
+                .text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(300)
+                .collect();
+            return Err(Error::Internal(format!(
+                "chatgpt models status {s}: {detail}"
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::Internal(format!("chatgpt models parse: {e}")))?;
+        let models = parse_models(&body);
+        if models.is_empty() {
+            // An empty list is what the server returns when it considers the
+            // client too old — not a subscription without models. Saying so
+            // beats showing an empty dropdown.
+            return Err(Error::Validation(format!(
+                "the backend returned no models for client_version {CLIENT_VERSION}; it is \
+                 probably behind what the server now expects"
+            )));
+        }
+        Ok(models)
     }
+}
+
+/// `{ "models": [{ "slug": "gpt-6-astra", … }] }` → ids, in server order.
+/// Entries without a slug are skipped rather than rendered as blanks.
+fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
+    body.get("models")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("slug").and_then(|s| s.as_str()))
+                .filter(|s| !s.is_empty())
+                .map(|s| ModelInfo {
+                    id: s.to_string(),
+                    display_name: None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One function call being streamed. Arguments arrive as deltas keyed by the
@@ -623,6 +679,20 @@ mod tests {
         assert!(out.iter().any(
             |e| matches!(e, Ok(StreamEvent::Error { message }) if message.contains("not available"))
         ));
+    }
+
+    #[test]
+    fn models_come_from_the_backend_shape() {
+        // The shape the live endpoint returns, trimmed.
+        let body = serde_json::json!({"models": [
+            {"slug": "gpt-6-astra", "tool_mode": "code_mode_only"},
+            {"slug": "gpt-5.6-sol"},
+            {"no_slug": true},
+        ]});
+        let ids: Vec<String> = parse_models(&body).into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec!["gpt-6-astra", "gpt-5.6-sol"]);
+        assert!(parse_models(&serde_json::json!({"models": []})).is_empty());
+        assert!(parse_models(&serde_json::json!({})).is_empty());
     }
 
     #[tokio::test]

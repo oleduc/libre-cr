@@ -190,7 +190,7 @@ pub fn build_provider(cfg: &Config, install_key: &InstallKey) -> Result<Arc<dyn 
         "chatgpt" => {
             let p = ChatGptProvider::new(
                 cfg.provider.model.clone(),
-                chatgpt_auth::default_token_path(),
+                crate::config::expand_path(&cfg.provider.chatgpt_token_file),
             )
             .with_base(cfg.provider.endpoint.clone());
             Ok(Arc::new(p))

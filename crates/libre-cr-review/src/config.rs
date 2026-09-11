@@ -90,6 +90,14 @@ pub struct ProviderConfig {
     pub temperature: f32,
     #[serde(default)]
     pub endpoint: String,
+    /// Where the `chatgpt` kind keeps its OAuth tokens. Configurable so tests
+    /// (and a second daemon) never share one sign-in by accident.
+    #[serde(default = "default_chatgpt_token_file")]
+    pub chatgpt_token_file: String,
+}
+
+pub fn default_chatgpt_token_file() -> String {
+    "~/.config/libre-cr/chatgpt-auth.json".into()
 }
 
 impl Default for ProviderConfig {
@@ -101,6 +109,7 @@ impl Default for ProviderConfig {
             max_tokens: 4096,
             temperature: 0.0,
             endpoint: String::new(),
+            chatgpt_token_file: default_chatgpt_token_file(),
         }
     }
 }

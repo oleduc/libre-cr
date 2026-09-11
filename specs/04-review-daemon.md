@@ -427,6 +427,7 @@ separate implementation, not a variant of `openai_compat`:
 
 - Base URL `https://chatgpt.com/backend-api/wham`, path `/responses`. Overridable by the endpoint field, since OpenAI has renamed this path before (it was `.../codex`).
 - Headers: `Authorization: Bearer <access>`, `ChatGPT-Account-Id: <account_id>`, and `originator: libre_cr` — this client's own name, not a borrowed one.
+- The token file is `provider.chatgpt_token_file` in config (default `~/.config/libre-cr/chatgpt-auth.json`), not a fixed path: two daemons — or a test run — must not share one sign-in by accident.
 - The system prompt goes in `instructions`, not as a message; message content parts are typed `input_text` / `output_text`, not `text`; `store: false` is mandatory.
 - Tool calls are `function_call` items addressed by `call_id`, and results are `function_call_output` items carrying the same id. The streaming item id is *not* the call id; conflating them silently breaks the tool loop.
 - Tool schemas are flat (`{ type: "function", name, description, parameters }`) rather than nested under `function`.
@@ -439,10 +440,26 @@ values apply to every other kind and are ignored here rather than producing a
 
 ### Models
 
-That backend exposes no `/v1/models`, so `list_models` returns a built-in
-catalogue (the GPT-5.x and Codex variants the subscription grants) rather than
-failing. The model field stays free text: a catalogue that lags OpenAI's
-releases must not stop a user from typing a new id.
+`list_models` asks the backend: `GET {base}/models?client_version=<v>`, mapping
+each entry's `slug` to a model id in the order returned.
+
+**The list is gated on `client_version`.** Measured against a live account:
+`1.0.0` returned 8 models, `0.99.0` returned 1, `0.80.0` returned none. So a
+version that has fallen behind does not error — it quietly returns fewer
+models, or an empty list. An empty list is therefore reported as a stale
+client, not as a subscription without models, and the constant is raised as
+the backend moves on.
+
+The model field stays free text regardless: a list the daemon cannot fetch, or
+a model newer than the gate, must not stop a user from typing an id.
+
+> **Corrected 2026-09-11.** This section first claimed the backend exposes no
+> model list, so `list_models` returned a hardcoded catalogue. Both halves were
+> wrong: the endpoint exists, and the catalogue — written from an assistant's
+> training data rather than from the API — offered ids (`gpt-5.2-codex`,
+> `gpt-5.1`) that do not exist on it. Found by the user: "I only see pretty old
+> models". The lesson is the one the grounding spec already states about
+> answers, applied to specs: state what was observed, not what was recalled.
 
 ## Conversation Storage (SQLite)
 
