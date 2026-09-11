@@ -1033,7 +1033,20 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       chatgptPoll = setInterval(refreshChatgptStatus, 2000);
     }).catch(function () { chatgptStatusEl.textContent = "sign-in could not start"; });
   });
-  kindEl.addEventListener("change", updateProviderFields);
+  // Switching provider clears what belonged to the old one. An endpoint left
+  // over from another provider is not a harmless default: a ChatGPT sign-in
+  // pointed at an OpenRouter endpoint asked the wrong server for its models
+  // and got a confident, wrong answer back.
+  kindEl.addEventListener("change", function () {
+    endpointEl.value = "";
+    modelEl.value = "";
+    modelSelect.innerHTML = '<option value="__manual__">Other / type manually</option>';
+    modelSelect.value = "__manual__";
+    modelStatus.textContent = "";
+    apiKeyEl.value = "";
+    clearKeyEl.checked = false;
+    updateProviderFields();
+  });
 
   fetch("/v1/provider/detected", { headers: headers }).then(function (r) {
     if (!r.ok) throw new Error("HTTP " + r.status);

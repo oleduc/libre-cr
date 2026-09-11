@@ -453,6 +453,13 @@ the backend moves on.
 The model field stays free text regardless: a list the daemon cannot fetch, or
 a model newer than the gate, must not stop a user from typing an id.
 
+A response with **no** `models` list is a different failure from an **empty**
+one, and they are reported differently: the first means the endpoint is not
+this backend at all, the second means this backend offered nothing. Selecting
+this kind with an endpoint left over from another provider sent the sign-in to
+OpenRouter, which answered `200 {data: […]}` — and a version that conflated the
+two blamed `client_version` for it.
+
 > **Corrected 2026-09-11.** This section first claimed the backend exposes no
 > model list, so `list_models` returned a hardcoded catalogue. Both halves were
 > wrong: the endpoint exists, and the catalogue — written from an assistant's
@@ -589,7 +596,9 @@ The extension does **not** edit daemon config — not the provider, not the API 
 
 The daemon serves a minimal config UI at `http://127.0.0.1:<port>/config-ui` — a self-contained static HTML page, no templating. It reads its bearer token from the `?token=` query parameter (the wrapper's `libre-cr config` and the extension popup both open the URL with the token already appended) and attaches it as `Authorization: Bearer` on the JSON calls it makes. The token only ever appears in the URL the user already trusts to launch the daemon; it is never baked into stored markup.
 
-Selecting the `chatgpt` kind swaps the API-key field for a **Sign in with ChatGPT** button and a status line (signed in as, or signed out), driven by the two endpoints in § ChatGPT subscription provider. The same one-line notice about personal use lives next to it. Nothing else about the page changes.
+Selecting the `chatgpt` kind swaps the API-key field for a **Sign in with ChatGPT** button and a status line (signed in as, or signed out), driven by the two endpoints in § ChatGPT subscription provider. The same one-line notice about personal use lives next to it.
+
+Changing the provider kind clears the fields that belonged to the previous one — endpoint, model, the fetched model list, the key field. A leftover endpoint is not a harmless default: it silently points the new provider at the old provider's server.
 
 That page is where both editable config blocks live: the provider settings **and** the `[limits]` context caps, in one form with one Save. It reads both from `GET /v1/config` and sends a `provider` and a `limits` patch to `POST /v1/config`. The `limits` patch is partial — unmentioned caps are left alone — and every value is range-checked, so a zero cap answers 400 with the reason rather than storing a config that hands the model empty tool results.
 

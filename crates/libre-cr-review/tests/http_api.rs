@@ -526,7 +526,11 @@ async fn chatgpt_provider_reports_signed_out_and_offers_sign_in() {
         .unwrap();
     // 502 is this daemon's existing mapping for `ProviderUnauthorized` — a
     // credential problem at the provider, not at our own door (401 is ours).
-    assert_eq!(resp.status(), 502, "signed out must not be reported as success");
+    assert_eq!(
+        resp.status(),
+        502,
+        "signed out must not be reported as success"
+    );
 
     // The config page offers the kind and the sign-in control.
     let page = c
@@ -542,6 +546,10 @@ async fn chatgpt_provider_reports_signed_out_and_offers_sign_in() {
         "chatgpt (Plus/Pro subscription)",
         "Sign in with ChatGPT",
         "/v1/provider/chatgpt/status",
+        // Switching provider must clear the previous one's endpoint: a
+        // leftover OpenRouter URL sent a ChatGPT sign-in to the wrong server.
+        "kindEl.addEventListener(\"change\"",
+        "endpointEl.value = \"\";",
     ] {
         assert!(page.contains(needle), "config UI must offer {needle}");
     }

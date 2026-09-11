@@ -238,12 +238,10 @@ impl Provider for ChatGptProvider {
     /// offered model ids that do not.
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let tokens = self.access().await?;
+        let url = format!("{}/models?client_version={CLIENT_VERSION}", self.base);
         let resp = self
             .client
-            .get(format!(
-                "{}/models?client_version={CLIENT_VERSION}",
-                self.base
-            ))
+            .get(&url)
             .bearer_auth(&tokens.access)
             .header("ChatGPT-Account-Id", &tokens.account_id)
             .header("originator", chatgpt_auth::ORIGINATOR)
