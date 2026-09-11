@@ -343,10 +343,17 @@ Provider kinds for v2 (`provider.kind` in config):
 - **`mock`** — no network; canned responses for development and tests.
 - **`anthropic`** — official Messages API. Streaming SSE. Tool-use loop. 120 s timeout. Implements `list_models` via `GET /v1/models`.
 - **`openai_compat`** — chat completions with tool calls. Works against api.openai.com, OpenRouter, Ollama, and any compatible endpoint.
+- **`chatgpt`** — a ChatGPT Plus/Pro subscription via OpenAI's Codex OAuth. Responses API, not chat completions. See § ChatGPT subscription provider.
 
 Both streaming parsers are symmetric on failure: an `event: error` frame becomes a `StreamEvent::Error` carrying the API's message (rather than a generic "ended without done"), and buffered tool-call state is flushed into a `ToolUse` on early EOF instead of being silently dropped. Streamed tool inputs are accumulated per block/call id and emitted as a single well-formed `ToolUse`, never per-fragment.
 
 Credential resolution (`anthropic` / `openai_compat`): the stored (decrypted) key always wins; when it is empty the daemon falls back to the standard ambient environment variable for the kind — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. This lets a user with the env var set never paste a key. Env vars only — the daemon never reads Claude Code / Claude CLI credentials, keychains, or `~/.claude/*` (Anthropic's terms restrict subscription OAuth tokens to Claude Code itself).
+
+The `chatgpt` kind is the deliberate exception to that last sentence, and the
+asymmetry is the provider's doing, not ours: OpenAI publishes the Codex OAuth
+client id and flow, and third-party clients (opencode and its auth plugins)
+use it. Anthropic publishes no equivalent. We follow what each vendor
+documents rather than a blanket rule.
 
 Configuration includes:
 - Model
@@ -354,6 +361,75 @@ Configuration includes:
 - Max tokens
 - Temperature (defaults to 0 for determinism in tool routing; can be raised for free-form explanation verbs)
 - Optional system prompt prepended to every turn ("global instructions")
+
+## ChatGPT subscription provider
+
+> **Status: specified, not built.**
+
+A reviewer with a ChatGPT Plus/Pro subscription can sign in and spend that
+subscription instead of API credit. This is the same flow OpenAI's own Codex
+CLI performs, with the same public client id.
+
+**Personal use, and gated as such.** Every client that implements this flow
+states it is for personal development use, not for hosted or multi-user
+services, and libre-cr is a tool other people install. So: the kind is never a
+default, it is selected explicitly in the config UI, and the UI says in one
+line that it spends the user's own subscription and is intended for personal
+use. No fallback ever selects it, and nothing about it is enabled by
+installing libre-cr.
+
+### Sign-in
+
+PKCE authorization-code flow, driven from the config UI:
+
+| Step | What happens |
+|---|---|
+| 1 | The UI posts `POST /v1/provider/chatgpt/login`. The daemon generates a PKCE verifier/challenge, binds a loopback listener on `127.0.0.1:1455`, and returns the authorize URL. |
+| 2 | The user opens it and signs in to ChatGPT. |
+| 3 | OpenAI redirects to `http://localhost:1455/auth/callback?code=…`. The daemon's listener takes the code, closes the listener, and exchanges it at `https://auth.openai.com/oauth/token`. |
+| 4 | Tokens are stored; the UI polls `GET /v1/provider/chatgpt/status` and shows the signed-in account. |
+
+Authorization parameters, as the Codex CLI sends them: `client_id=app_EMoamEEZ73f0CkXaXp7hrann`, `response_type=code`, `redirect_uri=http://localhost:1455/auth/callback`, `code_challenge_method=S256`, `id_token_add_organizations=true`, `codex_cli_simplified_flow=true`, and an `originator` naming this client.
+
+The fixed port is OpenAI's, not ours — the redirect URI is registered against
+that client id, so port 1455 must be free for the duration of the sign-in. A
+port already in use fails the login with that reason rather than silently
+falling back.
+
+### Tokens
+
+Stored as `~/.config/libre-cr/chatgpt-auth.json`, mode `0600`, holding
+`{ access, refresh, expires_ms, account_id }`. `account_id` is read from the
+id-token claims at exchange time. The file sits beside the daemon's other
+secrets and is encrypted with the same install key as `api_key_enc`.
+
+If the user already runs Codex CLI, `~/.codex/auth.json` holds the same shape.
+The daemon does **not** read it: an interactive sign-in makes the daemon's
+access explicit and revocable on its own terms, and a shared file makes two
+programs' refresh cycles race. (Reading it is the obvious convenience request;
+it is declined for those two reasons, not for a technical one.)
+
+Refresh happens when fewer than 30 seconds remain before expiry, and once
+more on a 401 before the turn is failed. A refresh that fails clears the
+stored tokens and surfaces "signed out" rather than retrying.
+
+### Requests
+
+The subscription backend speaks the **Responses API**, so this provider is a
+separate implementation, not a variant of `openai_compat`:
+
+- Base URL `https://chatgpt.com/backend-api/wham` (was `.../codex`; confirmed at implementation time), path `/responses`.
+- Headers: `Authorization: Bearer <access>`, `ChatGPT-Account-Id: <account_id>`, and an `originator`.
+- The system prompt goes in `instructions`, not as a message; message content parts are typed `input_text`, not `text`; `store: false` is mandatory.
+- Tool schemas are flat (`{ type: "function", name, description, parameters }`) rather than nested under `function`.
+- Streaming events are Responses-API events (`response.output_text.delta`, function-call argument deltas, a terminal `response.completed` carrying usage), mapped onto the same `StreamEvent` the rest of the daemon already consumes — so the agent loop, the caps, and the panel need no changes.
+
+### Models
+
+That backend exposes no `/v1/models`, so `list_models` returns a built-in
+catalogue (the GPT-5.x and Codex variants the subscription grants) rather than
+failing. The model field stays free text: a catalogue that lags OpenAI's
+releases must not stop a user from typing a new id.
 
 ## Conversation Storage (SQLite)
 
@@ -482,6 +558,8 @@ on a real PR — over half of a 262k-token context in a single tool result.
 The extension does **not** edit daemon config — not the provider, not the API key, and not the `[limits]` caps. Two reasons: (a) the work happens in the daemon, so its settings belong there; (b) the extension's options page is a leaky abstraction across multiple PR-review surfaces, and splitting config across two editors is the same leak twice.
 
 The daemon serves a minimal config UI at `http://127.0.0.1:<port>/config-ui` — a self-contained static HTML page, no templating. It reads its bearer token from the `?token=` query parameter (the wrapper's `libre-cr config` and the extension popup both open the URL with the token already appended) and attaches it as `Authorization: Bearer` on the JSON calls it makes. The token only ever appears in the URL the user already trusts to launch the daemon; it is never baked into stored markup.
+
+Selecting the `chatgpt` kind swaps the API-key field for a **Sign in with ChatGPT** button and a status line (signed in as, or signed out), driven by the two endpoints in § ChatGPT subscription provider. The same one-line notice about personal use lives next to it. Nothing else about the page changes.
 
 That page is where both editable config blocks live: the provider settings **and** the `[limits]` context caps, in one form with one Save. It reads both from `GET /v1/config` and sends a `provider` and a `limits` patch to `POST /v1/config`. The `limits` patch is partial — unmentioned caps are left alone — and every value is range-checked, so a zero cap answers 400 with the reason rather than storing a config that hands the model empty tool results.
 
