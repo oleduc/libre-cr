@@ -544,15 +544,27 @@ fn drain_response_event(
             flush_calls(state, out);
             emit_done(state, out);
         }
-        "response.failed" | "error" => {
-            let message = v
-                .get("response")
-                .and_then(|r| r.get("error"))
-                .and_then(|e| e.get("message"))
-                .or_else(|| v.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("chatgpt stream error")
-                .to_string();
+        "response.failed" | "error" | "response.error" => {
+            // Whatever the API said, said back. A bare "chatgpt stream error"
+            // is the failure this file keeps repeating: a diagnosis invented
+            // where the evidence was thrown away. If none of the known paths
+            // holds a message, the raw event goes in the error instead.
+            let message = [
+                v.pointer("/response/error/message"),
+                v.pointer("/error/message"),
+                v.pointer("/message"),
+                v.pointer("/detail"),
+                v.pointer("/response/incomplete_details/reason"),
+            ]
+            .into_iter()
+            .flatten()
+            .find_map(|m| m.as_str())
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| {
+                let raw: String = v.to_string().chars().take(600).collect();
+                format!("chatgpt stream error; raw event: {raw}")
+            });
+            tracing::warn!(event = %v, "chatgpt stream error event");
             out.push_back(Ok(StreamEvent::Error { message }));
         }
         _ => {}
@@ -710,11 +722,26 @@ mod tests {
 
     #[test]
     fn stream_errors_surface_the_api_message() {
-        let out = drain(&[
-            r#"{"type":"response.failed","response":{"error":{"message":"model not available on this plan"}}}"#,
-        ]);
+        for (payload, needle) in [
+            (
+                r#"{"type":"response.failed","response":{"error":{"message":"model not available on this plan"}}}"#,
+                "not available",
+            ),
+            // Shapes seen from this backend that the first cut missed, and
+            // reported as a bare "chatgpt stream error" instead.
+            (r#"{"type":"error","error":{"message":"bad tool schema"}}"#, "bad tool schema"),
+            (r#"{"type":"error","detail":"Unsupported parameter: x"}"#, "Unsupported parameter"),
+        ] {
+            let out = drain(&[payload]);
+            assert!(
+                out.iter().any(|e| matches!(e, Ok(StreamEvent::Error { message }) if message.contains(needle))),
+                "expected {needle} from {payload}"
+            );
+        }
+        // An unrecognised shape carries the raw event rather than a guess.
+        let out = drain(&[r#"{"type":"error","unexpected":{"nested":1}}"#]);
         assert!(out.iter().any(
-            |e| matches!(e, Ok(StreamEvent::Error { message }) if message.contains("not available"))
+            |e| matches!(e, Ok(StreamEvent::Error { message }) if message.contains("raw event"))
         ));
     }
 
