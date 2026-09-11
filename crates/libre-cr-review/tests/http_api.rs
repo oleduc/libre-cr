@@ -540,7 +540,17 @@ async fn provider_capabilities_are_declared_per_kind() {
         .text()
         .await
         .unwrap();
-    for needle in ["/v1/provider/capabilities", "This provider ignores: "] {
+    for needle in [
+        "/v1/provider/capabilities",
+        "Not used by this provider, so not shown: ",
+        // Hidden, not greyed out — and [hidden] has to beat the grid's display.
+        "fields[key].hidden = !supported;",
+        "[hidden] { display: none !important; }",
+        // The model's output ceiling binds the field, and anything lower is
+        // the reviewer's call.
+        "This model emits at most ",
+        "maxTokensEl.setAttribute(\"max\", cap);",
+    ] {
         assert!(page.contains(needle), "config UI must use {needle}");
     }
 }

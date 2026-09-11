@@ -150,6 +150,12 @@ pub struct ModelInfo {
     /// from it only when it is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
+    /// The most tokens this model will *emit* in one response, when stated.
+    /// A different number from `context_tokens`, which covers input and output
+    /// together: sending the context window as `max_tokens` is rejected by
+    /// most APIs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
 }
 
 /// What a provider actually reads from its config. The config UI disables the
@@ -290,6 +296,7 @@ mod tests {
             id: "gpt-4o".into(),
             display_name: None,
             context_tokens: None,
+            max_output_tokens: None,
         };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["id"], "gpt-4o");

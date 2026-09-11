@@ -331,6 +331,8 @@ fn parse_models(body: &serde_json::Value) -> Option<Vec<ModelInfo>> {
                     // `max_context_window` is what it could be raised to, so
                     // sizing caps from that would overshoot every turn.
                     context_tokens: m.get("context_window").and_then(|n| n.as_u64()),
+                    // The Codex model list states no output cap.
+                    max_output_tokens: None,
                 })
             })
             .collect(),

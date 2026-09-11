@@ -350,8 +350,10 @@ returns a `ProviderCapabilities` saying which of the provider block's fields it
 actually reads; the default supports everything, so a provider opts *out* of
 what it ignores and forgetting to declare leaves fields editable rather than
 silently greying them out. `GET /v1/provider/capabilities` returns the map for
-every kind, and the config UI disables the rest — a value that goes nowhere
-reads as configuration, and the ChatGPT kind ignores three of them.
+every kind, and the config UI **hides** the rest rather than greying it out: a
+disabled input still reads as a setting that exists and is merely unavailable,
+while these simply do not apply. One line names what is not shown, so nothing
+disappears without explanation.
 
 | Provider | Ignores |
 |---|---|
@@ -366,12 +368,21 @@ everything downstream (the config UI's picker, cap sizing) works without
 knowing which provider it is talking to. `context_tokens` is `None` where an
 API does not state a window; it is never inferred from a model id.
 
-| Provider | Source of `context_tokens` |
-|---|---|
-| `chatgpt` | `context_window` on the Codex model list |
-| `openai_compat` | `context_length` — OpenRouter states it, api.openai.com does not |
-| `anthropic` | not stated by its model list |
-| `mock` | none |
+| Provider | `context_tokens` | `max_output_tokens` |
+|---|---|---|
+| `chatgpt` | `context_window` on the Codex model list | not stated |
+| `openai_compat` | `context_length` — OpenRouter states it, api.openai.com does not | `top_provider.max_completion_tokens` (OpenRouter) |
+| `anthropic` | not stated by its model list | not stated |
+| `mock` | none | none |
+
+**Three numbers, easily confused.** `provider.max_tokens` caps what the model
+may *emit in one answer* and is sent to the API as such. `context_tokens` is
+the window holding input and output together — sending it as `max_tokens` is
+rejected by most APIs. The `[limits]` character caps bound what *we* feed in.
+The config UI labels the field "Max tokens (per answer)" for that reason, takes
+a model's stated output ceiling as the input's `max`, and fills it in when a
+model is picked; a lower value is always allowed, since that is the reviewer's
+call, not the model's.
 
 Provider kinds for v2 (`provider.kind` in config):
 

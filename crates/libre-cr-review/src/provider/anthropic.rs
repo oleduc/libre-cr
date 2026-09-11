@@ -56,6 +56,7 @@ fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
                         display_name,
                         // Anthropic's model list states no context window.
                         context_tokens: None,
+                        max_output_tokens: None,
                     })
                 })
                 .collect()

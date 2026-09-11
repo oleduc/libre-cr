@@ -52,6 +52,13 @@ fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
                         // OpenRouter's does, as `context_length`. Absent stays
                         // absent rather than being guessed from the model id.
                         context_tokens: m.get("context_length").and_then(|n| n.as_u64()),
+                        // OpenRouter states the output cap under the provider
+                        // actually serving the model, which is the number that
+                        // binds — not the family's headline figure.
+                        max_output_tokens: m
+                            .get("top_provider")
+                            .and_then(|t| t.get("max_completion_tokens"))
+                            .and_then(|n| n.as_u64()),
                     })
                 })
                 .collect()
@@ -620,9 +627,13 @@ mod tests {
 
         // OpenRouter's list does carry it, through the same interface.
         let body = serde_json::json!({"data": [
-            {"id": "moonshotai/kimi-k3", "context_length": 262144}
+            {"id": "moonshotai/kimi-k3", "context_length": 1048576,
+             "top_provider": {"context_length": 1048576, "max_completion_tokens": 943718}}
         ]});
-        assert_eq!(parse_models(&body)[0].context_tokens, Some(262_144));
+        let m = &parse_models(&body)[0];
+        assert_eq!(m.context_tokens, Some(1_048_576));
+        // The output cap is a different number from the window.
+        assert_eq!(m.max_output_tokens, Some(943_718));
     }
 
     #[test]

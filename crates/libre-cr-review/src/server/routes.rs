@@ -835,6 +835,8 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
                   font: inherit; }
   button { margin-top: 1rem; padding: 0.5rem 1rem; font: inherit; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+  /* A grid child's display beats the UA's [hidden] rule; say it explicitly. */
+  [hidden] { display: none !important; }
   #status { margin-top: 0.75rem; font-size: 0.9rem; }
   .ok { color: #064; } .err { color: #803; }
   small { color: #777; }
@@ -860,29 +862,34 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     <option value="chatgpt">chatgpt (Plus/Pro subscription)</option>
   </select>
 
-  <label for="modelSelect">Model</label>
-  <div class="modelRow">
-    <select id="modelSelect" name="modelSelect">
-      <option value="__manual__">Other / type manually</option>
-    </select>
-    <button type="button" id="fetchModels">Fetch models</button>
+  <div id="modelField">
+    <label for="modelSelect">Model</label>
+    <div class="modelRow">
+      <select id="modelSelect" name="modelSelect">
+        <option value="__manual__">Other / type manually</option>
+      </select>
+      <button type="button" id="fetchModels">Fetch models</button>
+    </div>
+    <input id="model" name="model" type="text" autocomplete="off" placeholder="model id" />
+    <p id="modelStatus" class="modelStatus" aria-live="polite"></p>
   </div>
-  <input id="model" name="model" type="text" autocomplete="off" placeholder="model id" />
-  <p id="modelStatus" class="modelStatus" aria-live="polite"></p>
 
   <div class="row">
-    <div>
-      <label for="max_tokens">Max tokens</label>
+    <div id="maxTokensField">
+      <label for="max_tokens">Max tokens <small>(per answer)</small></label>
       <input id="max_tokens" name="max_tokens" type="number" min="1" />
+      <p id="maxTokensHint" class="hint" hidden></p>
     </div>
-    <div>
+    <div id="temperatureField">
       <label for="temperature">Temperature</label>
       <input id="temperature" name="temperature" type="number" step="0.05" min="0" max="2" />
     </div>
   </div>
 
-  <label for="endpoint">Endpoint <small>(blank = provider default)</small></label>
-  <input id="endpoint" name="endpoint" type="text" autocomplete="off" />
+  <div id="endpointField">
+    <label for="endpoint">Endpoint <small>(blank = provider default)</small></label>
+    <input id="endpoint" name="endpoint" type="text" autocomplete="off" />
+  </div>
 
   <div id="apiKeyField">
     <label for="api_key">API key <small>(stored encrypted)</small></label>
@@ -1024,6 +1031,7 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   modelSelect.addEventListener("change", function () {
     if (modelSelect.value !== "__manual__") {
       modelEl.value = modelSelect.value;
+      applyModelMaxOutput(true);
     }
   });
   // The subscription provider has no key field: it has a sign-in.
@@ -1039,6 +1047,10 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   // Context window per fetched model id — only for providers that report one
   // (`ModelInfo.context_tokens`). Cleared whenever the list is refetched.
   var modelContext = {};
+  // Max *output* tokens per model, where a provider states one. A different
+  // number from the context window: that covers input and output together, and
+  // sending it as max_tokens is rejected.
+  var modelMaxOutput = {};
   function refreshChatgptStatus() {
     return fetch("/v1/provider/chatgpt/status", { headers: headers }).then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -1056,9 +1068,10 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       return st;
     }).catch(function () { chatgptStatusEl.textContent = "status unavailable"; });
   }
-  // Grey out what this provider ignores, and say so once rather than per
-  // field. A value that goes nowhere is worse than a disabled input: it reads
-  // as configuration.
+  // Hide what this provider ignores. A disabled input still reads as a
+  // setting that exists and is merely unavailable; the field simply does not
+  // apply here, so it is not shown. The one-line summary says what is gone,
+  // so nothing vanishes without explanation.
   var IGNORED_LABELS = {
     temperature: "temperature",
     max_tokens: "max tokens",
@@ -1069,24 +1082,23 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     var caps = capabilities[kindEl.value];
     var ignored = [];
     var fields = {
-      temperature: document.getElementById("temperature"),
-      max_tokens: document.getElementById("max_tokens"),
-      endpoint: endpointEl,
-      model: modelEl,
+      temperature: document.getElementById("temperatureField"),
+      max_tokens: document.getElementById("maxTokensField"),
+      endpoint: document.getElementById("endpointField"),
+      model: document.getElementById("modelField"),
     };
     Object.keys(fields).forEach(function (key) {
       var supported = !caps || caps[key] !== false;
-      fields[key].disabled = !supported;
+      fields[key].hidden = !supported;
       if (!supported) ignored.push(IGNORED_LABELS[key]);
     });
     var listSupported = !caps || caps.model_list !== false;
-    document.getElementById("fetchModels").disabled = !listSupported;
-    modelSelect.disabled = !listSupported || (caps && caps.model === false);
+    document.getElementById("fetchModels").hidden = !listSupported;
     ignoredHint.hidden = ignored.length === 0;
     ignoredHint.textContent = ignored.length
-      ? "This provider ignores: " + ignored.join(", ") + "."
+      ? "Not used by this provider, so not shown: " + ignored.join(", ") + "."
       : "";
-    // The key field is replaced by the sign-in, not merely disabled.
+    // The key field is replaced by the sign-in, not merely hidden.
     apiKeyField.hidden = !!(caps && caps.api_key === false);
   }
   function updateProviderFields() {
@@ -1194,6 +1206,7 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       manual.textContent = "Other / type manually";
       modelSelect.appendChild(manual);
       modelContext = {};
+      modelMaxOutput = {};
       models.forEach(function (m) {
         var opt = document.createElement("option");
         opt.value = m.id;
@@ -1202,6 +1215,7 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
           label += " — " + m.context_tokens.toLocaleString() + " tokens";
           modelContext[m.id] = m.context_tokens;
         }
+        if (m.max_output_tokens) modelMaxOutput[m.id] = m.max_output_tokens;
         opt.textContent = label;
         modelSelect.appendChild(opt);
       });
@@ -1210,6 +1224,7 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       modelSelect.value = match ? modelEl.value : "__manual__";
       setModelStatus("Loaded " + models.length + " model(s). Pick one or type your own.", false);
       updateDeriveButton();
+      applyModelMaxOutput(false);
     }).catch(function (e) {
       setModelStatus("Could not fetch models: " + e.message + " You can still type the model id.", true);
     });
@@ -1230,7 +1245,29 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       ? "from " + ctx.toLocaleString() + "-token context"
       : "fetch models and pick one that reports a context window";
   }
-  modelEl.addEventListener("input", updateDeriveButton);
+  // The model's output ceiling, when it states one: the input takes it as a
+  // `max`, so the browser blocks saving more, and anything lower is fine —
+  // that is the reviewer's call, not the model's.
+  var maxTokensEl = document.getElementById("max_tokens");
+  var maxTokensHint = document.getElementById("maxTokensHint");
+  function applyModelMaxOutput(prefill) {
+    var cap = modelMaxOutput[modelEl.value] || 0;
+    maxTokensHint.hidden = !cap;
+    if (!cap) {
+      maxTokensEl.removeAttribute("max");
+      return;
+    }
+    maxTokensEl.setAttribute("max", cap);
+    maxTokensHint.textContent =
+      "This model emits at most " + cap.toLocaleString() + " tokens per answer. Lower is fine.";
+    // Picking a model fills the ceiling in; a page load only clamps a value
+    // the model cannot honour, so a deliberately low setting survives.
+    if (prefill || Number(maxTokensEl.value) > cap) maxTokensEl.value = cap;
+  }
+  modelEl.addEventListener("input", function () {
+    updateDeriveButton();
+    applyModelMaxOutput(false);
+  });
   modelSelect.addEventListener("change", updateDeriveButton);
   deriveBtn.addEventListener("click", function () {
     var ctx = selectedContext();

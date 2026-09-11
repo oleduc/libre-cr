@@ -106,11 +106,13 @@ impl Provider for MockProvider {
                 id: "mock-fast".into(),
                 display_name: Some("Mock Fast".into()),
                 context_tokens: None,
+                max_output_tokens: None,
             },
             ModelInfo {
                 id: "mock-smart".into(),
                 display_name: Some("Mock Smart".into()),
                 context_tokens: None,
+                max_output_tokens: None,
             },
         ])
     }
