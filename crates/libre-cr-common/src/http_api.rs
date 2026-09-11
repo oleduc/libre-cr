@@ -145,6 +145,24 @@ pub struct ModelInfo {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// The model's context window, when the provider reports one. Absent is
+    /// "not stated", never "small" — the config UI offers to size the caps
+    /// from it only when it is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+}
+
+/// `GET /v1/limits/derive?context_tokens=N` — the character caps that suit a
+/// context window of that size. Returned for the config UI to *fill in*; the
+/// daemon stores nothing until the form is saved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DerivedLimits {
+    pub context_tokens: u64,
+    pub chars_per_token: f32,
+    pub max_tool_result_chars: usize,
+    pub max_turn_tool_chars: usize,
+    pub replay_result_chars: usize,
+    pub replay_turn_chars: usize,
 }
 
 /// `POST /v1/provider/models`.
@@ -236,10 +254,14 @@ mod tests {
         let m = ModelInfo {
             id: "gpt-4o".into(),
             display_name: None,
+            context_tokens: None,
         };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["id"], "gpt-4o");
         assert!(v.get("display_name").is_none());
+        // A provider that cannot state a window omits the field; the config UI
+        // reads absent as "unknown" and leaves cap sizing unavailable.
+        assert!(v.get("context_tokens").is_none());
     }
 
     #[test]

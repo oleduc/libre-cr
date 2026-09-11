@@ -336,7 +336,28 @@ trait Provider: Send + Sync {
     // Providers opt in; the default returns "not supported".
     async fn list_models(&self) -> Result<Vec<ModelInfo>>;
 }
+
+struct ModelInfo {
+    id: String,
+    display_name: Option<String>,
+    /// The model's context window, when this provider can state one.
+    context_tokens: Option<u64>,
+}
 ```
+
+**Model capabilities are the provider's to report.** `list_models` is the only
+place that knows how a given API describes its models, and `ModelInfo` is the
+shape every provider answers in — so a new provider implements one method and
+everything downstream (the config UI's picker, cap sizing) works without
+knowing which provider it is talking to. `context_tokens` is `None` where an
+API does not state a window; it is never inferred from a model id.
+
+| Provider | Source of `context_tokens` |
+|---|---|
+| `chatgpt` | `context_window` on the Codex model list |
+| `openai_compat` | `context_length` — OpenRouter states it, api.openai.com does not |
+| `anthropic` | not stated by its model list |
+| `mock` | none |
 
 Provider kinds for v2 (`provider.kind` in config):
 
@@ -599,6 +620,10 @@ The daemon serves a minimal config UI at `http://127.0.0.1:<port>/config-ui` —
 Selecting the `chatgpt` kind swaps the API-key field for a **Sign in with ChatGPT** button and a status line (signed in as, or signed out), driven by the two endpoints in § ChatGPT subscription provider. The same one-line notice about personal use lives next to it.
 
 Changing the provider kind clears the fields that belonged to the previous one — endpoint, model, the fetched model list, the key field. A leftover endpoint is not a harmless default: it silently points the new provider at the old provider's server.
+
+The limits fieldset offers **Size these to the model**: `GET /v1/limits/derive?context_tokens=N` returns the four character caps that suit that window, and the button fills them into the form. It is enabled only when the selected model reported a window, it asks for confirmation first because it overwrites values the user may have tuned, and — like every other control on the page — it writes nothing. The caps reach `review.toml` when the form is saved, never before.
+
+The division itself (`config::derive_limits`) is provider-agnostic: what a model's window *is* comes from the provider, how a window is divided into caps is one policy shared by all of them. Characters per token is stated explicitly (3.5, source code being denser than prose) rather than buried, and the fractions are the ones the hand-tuned defaults already imply at a 262k window — so pressing it on an existing setup reproduces roughly what is configured rather than silently re-tuning it. Floors keep a small window from producing caps the agent loop cannot make progress under.
 
 That page is where both editable config blocks live: the provider settings **and** the `[limits]` context caps, in one form with one Save. It reads both from `GET /v1/config` and sends a `provider` and a `limits` patch to `POST /v1/config`. The `limits` patch is partial — unmentioned caps are left alone — and every value is range-checked, so a zero cap answers 400 with the reason rather than storing a config that hands the model empty tool results.
 

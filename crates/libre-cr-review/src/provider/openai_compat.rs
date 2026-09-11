@@ -46,6 +46,10 @@ fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
                     Some(ModelInfo {
                         id,
                         display_name: None,
+                        // OpenAI's own `/v1/models` states no context window;
+                        // OpenRouter's does, as `context_length`. Absent stays
+                        // absent rather than being guessed from the model id.
+                        context_tokens: m.get("context_length").and_then(|n| n.as_u64()),
                     })
                 })
                 .collect()
@@ -596,7 +600,14 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "gpt-4o");
         assert_eq!(models[0].display_name, None);
+        assert_eq!(models[0].context_tokens, None, "openai states no window");
         assert_eq!(models[1].id, "gpt-4o-mini");
+
+        // OpenRouter's list does carry it, through the same interface.
+        let body = serde_json::json!({"data": [
+            {"id": "moonshotai/kimi-k3", "context_length": 262144}
+        ]});
+        assert_eq!(parse_models(&body)[0].context_tokens, Some(262_144));
     }
 
     #[test]

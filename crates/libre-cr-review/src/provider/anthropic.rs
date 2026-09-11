@@ -49,7 +49,12 @@ fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
                         .get("display_name")
                         .and_then(|s| s.as_str())
                         .map(|s| s.to_string());
-                    Some(ModelInfo { id, display_name })
+                    Some(ModelInfo {
+                        id,
+                        display_name,
+                        // Anthropic's model list states no context window.
+                        context_tokens: None,
+                    })
                 })
                 .collect()
         })

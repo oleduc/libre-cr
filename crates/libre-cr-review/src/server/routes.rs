@@ -12,7 +12,7 @@ use axum::{
 };
 use libre_cr_common::http_api::{
     ChatGptLoginResponse, ChatGptStatus, CodeDaemonHealth, CodeDaemonHealthResponse,
-    CreateSessionResponse, DetectedCredentials, ExportResponse, HealthResponse,
+    CreateSessionResponse, DerivedLimits, DetectedCredentials, ExportResponse, HealthResponse,
     ListSessionsResponse, ModelsResponse, PairIssueResponse, PairRedeemResponse, SearchHit,
     SearchResponse, SessionDetailResponse, SessionSummary, VerbDescriptor,
 };
@@ -83,6 +83,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/provider/detected", get(provider_detected))
         .route("/v1/provider/chatgpt/login", post(chatgpt_login))
         .route("/v1/provider/chatgpt/status", get(chatgpt_status))
+        .route("/v1/limits/derive", get(limits_derive))
         .route("/v1/health", get(health))
         .route("/v1/health/code-daemon", get(health_code_daemon))
         .route("/v1/pair", post(pair))
@@ -648,6 +649,23 @@ async fn chatgpt_status(State(state): State<AppState>) -> Json<ChatGptStatus> {
     })
 }
 
+/// Caps that suit a given context window. Read-only: the config UI fills the
+/// form with these and the user saves them, so a model switch never rewrites
+/// `review.toml` behind their back.
+async fn limits_derive(
+    axum::extract::Query(q): axum::extract::Query<DeriveQuery>,
+) -> Result<Json<DerivedLimits>> {
+    if q.context_tokens == 0 {
+        return Err(Error::Validation("context_tokens must be positive".into()));
+    }
+    Ok(Json(crate::config::derive_limits(q.context_tokens)))
+}
+
+#[derive(Deserialize)]
+struct DeriveQuery {
+    context_tokens: u64,
+}
+
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     // I1: report the real code-daemon state when the CLI wired in the
     // health hook; the mock fallback only exists for in-process tests.
@@ -867,6 +885,10 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   </div>
 
   <h2>Context limits</h2>
+  <div class="modelRow">
+    <button type="button" id="deriveLimits" disabled>Size these to the model</button>
+    <span id="deriveHint" class="hint"></span>
+  </div>
   <p class="lede">Caps on what reaches the model, so a long conversation cannot outgrow its
   context window. The right values depend on that window: one <code>get_pr_diff</code> without
   <code>paths</code> measured 589,499 chars (~168k tokens) on a real PR — over half of a
@@ -993,6 +1015,9 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   var chatgptStatusEl = document.getElementById("chatgptStatus");
   var apiKeyField = document.getElementById("apiKeyField");
   var chatgptPoll = null;
+  // Context window per fetched model id — only for providers that report one
+  // (`ModelInfo.context_tokens`). Cleared whenever the list is refetched.
+  var modelContext = {};
   function refreshChatgptStatus() {
     return fetch("/v1/provider/chatgpt/status", { headers: headers }).then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -1106,20 +1131,66 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       manual.value = "__manual__";
       manual.textContent = "Other / type manually";
       modelSelect.appendChild(manual);
+      modelContext = {};
       models.forEach(function (m) {
         var opt = document.createElement("option");
         opt.value = m.id;
-        opt.textContent = m.display_name ? (m.display_name + " (" + m.id + ")") : m.id;
+        var label = m.display_name ? (m.display_name + " (" + m.id + ")") : m.id;
+        if (m.context_tokens) {
+          label += " — " + m.context_tokens.toLocaleString() + " tokens";
+          modelContext[m.id] = m.context_tokens;
+        }
+        opt.textContent = label;
         modelSelect.appendChild(opt);
       });
       // If the current text value matches a fetched model, preselect it.
       var match = models.some(function (m) { return m.id === modelEl.value; });
       modelSelect.value = match ? modelEl.value : "__manual__";
       setModelStatus("Loaded " + models.length + " model(s). Pick one or type your own.", false);
+      updateDeriveButton();
     }).catch(function (e) {
       setModelStatus("Could not fetch models: " + e.message + " You can still type the model id.", true);
     });
   });
+
+  // Fill the caps from the selected model's context window. It overwrites
+  // values the user may have tuned, so it asks first — and it only ever
+  // touches the form: nothing is stored until Save.
+  var deriveBtn = document.getElementById("deriveLimits");
+  var deriveHint = document.getElementById("deriveHint");
+  function selectedContext() {
+    return modelContext[modelEl.value] || 0;
+  }
+  function updateDeriveButton() {
+    var ctx = selectedContext();
+    deriveBtn.disabled = !ctx;
+    deriveHint.textContent = ctx
+      ? "from " + ctx.toLocaleString() + "-token context"
+      : "fetch models and pick one that reports a context window";
+  }
+  modelEl.addEventListener("input", updateDeriveButton);
+  modelSelect.addEventListener("change", updateDeriveButton);
+  deriveBtn.addEventListener("click", function () {
+    var ctx = selectedContext();
+    if (!ctx) return;
+    if (!window.confirm(
+      "Replace the four character caps below with values sized to a " +
+      ctx.toLocaleString() + "-token context?\n\n" +
+      "This only fills the form — nothing is saved until you press Save."
+    )) return;
+    fetch("/v1/limits/derive?context_tokens=" + ctx, { headers: headers }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (d) {
+      ["max_tool_result_chars", "max_turn_tool_chars", "replay_result_chars", "replay_turn_chars"]
+        .forEach(function (k) { document.getElementById(k).value = d[k]; });
+      setStatus("Filled from a " + ctx.toLocaleString() + "-token context at " +
+        d.chars_per_token + " chars/token. Review, then Save.", true);
+    }).catch(function (e) {
+      setStatus("Could not size the caps: " + e.message, false);
+    });
+  });
+  updateDeriveButton();
 
   document.getElementById("cfgForm").addEventListener("submit", function (ev) {
     ev.preventDefault();

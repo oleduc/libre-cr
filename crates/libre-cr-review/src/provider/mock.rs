@@ -92,10 +92,12 @@ impl Provider for MockProvider {
             ModelInfo {
                 id: "mock-fast".into(),
                 display_name: Some("Mock Fast".into()),
+                context_tokens: None,
             },
             ModelInfo {
                 id: "mock-smart".into(),
                 display_name: Some("Mock Smart".into()),
+                context_tokens: None,
             },
         ])
     }

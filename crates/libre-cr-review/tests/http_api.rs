@@ -501,6 +501,77 @@ async fn config_limits_round_trip_and_reject_out_of_range() {
     assert_eq!(still["limits"]["max_tool_result_chars"], 50_000);
 }
 
+/// Caps can be sized from a model's context window — computed by the daemon,
+/// filled into the form, and saved only when the user saves
+/// (`specs/04-review-daemon.md` § Configuration UI).
+#[tokio::test]
+async fn limits_can_be_derived_from_a_context_window_without_being_stored() {
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+
+    let before: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let derived: serde_json::Value = c
+        .get(url(h.addr, "/v1/limits/derive?context_tokens=872000"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // A window three times larger than the tuned default yields larger caps.
+    assert!(
+        derived["max_turn_tool_chars"].as_u64().unwrap()
+            > before["limits"]["max_turn_tool_chars"].as_u64().unwrap()
+    );
+    assert_eq!(derived["context_tokens"], 872_000);
+
+    let after: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        before["limits"], after["limits"],
+        "deriving must not write config"
+    );
+
+    // Zero is rejected rather than producing caps of zero.
+    let resp = c
+        .get(url(h.addr, "/v1/limits/derive?context_tokens=0"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    let page = c
+        .get(url(h.addr, "/config-ui"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for needle in ["Size these to the model", "window.confirm(", "/v1/limits/derive"] {
+        assert!(page.contains(needle), "config UI must offer {needle}");
+    }
+}
+
 /// Signed out, the subscription provider says so instead of reaching the
 /// network, and the config page offers the sign-in
 /// (`specs/04-review-daemon.md` § ChatGPT subscription provider).

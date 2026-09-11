@@ -268,36 +268,57 @@ impl Provider for ChatGptProvider {
             .json()
             .await
             .map_err(|e| Error::Internal(format!("chatgpt models parse: {e}")))?;
-        let models = parse_models(&body);
+        let Some(models) = parse_models(&body) else {
+            return Err(Error::Validation(format!(
+                "{url} answered without a `models` list, so it is not the ChatGPT backend. \
+                 Clear the endpoint field to use the default ({DEFAULT_BASE})."
+            )));
+        };
         if models.is_empty() {
             // An empty list is what the server returns when it considers the
             // client too old — not a subscription without models. Saying so
             // beats showing an empty dropdown.
             return Err(Error::Validation(format!(
-                "the backend returned no models for client_version {CLIENT_VERSION}; it is \
-                 probably behind what the server now expects"
+                "{url} returned no models for client_version {CLIENT_VERSION}; it is probably \
+                 behind what the server now expects"
             )));
         }
         Ok(models)
     }
 }
 
-/// `{ "models": [{ "slug": "gpt-6-astra", … }] }` → ids, in server order.
+/// `{ "models": [{ "slug": "gpt-6-astra", … }] }` → models, in server order.
 /// Entries without a slug are skipped rather than rendered as blanks.
-fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
-    body.get("models")
-        .and_then(|m| m.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| m.get("slug").and_then(|s| s.as_str()))
-                .filter(|s| !s.is_empty())
-                .map(|s| ModelInfo {
-                    id: s.to_string(),
-                    display_name: None,
+///
+/// `None` means the response carried no `models` list at all, which is not the
+/// same as an empty one: the first says we asked the wrong server, the second
+/// says this server offered nothing. Conflating them produced a confident
+/// wrong diagnosis — an endpoint left pointing at OpenRouter answered 200 with
+/// `{data: […]}`, and the daemon blamed its own `client_version`.
+fn parse_models(body: &serde_json::Value) -> Option<Vec<ModelInfo>> {
+    let arr = body.get("models")?.as_array()?;
+    Some(
+        arr.iter()
+            .filter_map(|m| {
+                let slug = m
+                    .get("slug")
+                    .and_then(|s| s.as_str())
+                    .filter(|s| !s.is_empty())?;
+                Some(ModelInfo {
+                    id: slug.to_string(),
+                    display_name: m
+                        .get("display_name")
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string()),
+                    // `context_window` is what the model is served with here;
+                    // `max_context_window` is what it could be raised to, so
+                    // sizing caps from that would overshoot every turn.
+                    context_tokens: m.get("context_window").and_then(|n| n.as_u64()),
                 })
-                .collect()
-        })
-        .unwrap_or_default()
+            })
+            .collect(),
+    )
 }
 
 /// One function call being streamed. Arguments arrive as deltas keyed by the
@@ -683,14 +704,26 @@ mod tests {
     fn models_come_from_the_backend_shape() {
         // The shape the live endpoint returns, trimmed.
         let body = serde_json::json!({"models": [
-            {"slug": "gpt-6-astra", "tool_mode": "code_mode_only"},
+            {"slug": "gpt-6-astra", "display_name": "GPT-6 Astra", "tool_mode": "code_mode_only",
+             "context_window": 272000, "max_context_window": 872000},
             {"slug": "gpt-5.6-sol"},
             {"no_slug": true},
         ]});
-        let ids: Vec<String> = parse_models(&body).into_iter().map(|m| m.id).collect();
+        let models = parse_models(&body).unwrap();
+        let ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
         assert_eq!(ids, vec!["gpt-6-astra", "gpt-5.6-sol"]);
-        assert!(parse_models(&serde_json::json!({"models": []})).is_empty());
-        assert!(parse_models(&serde_json::json!({})).is_empty());
+        assert_eq!(models[0].display_name.as_deref(), Some("GPT-6 Astra"));
+        // The window it is served with, not the one it could be raised to.
+        assert_eq!(models[0].context_tokens, Some(272_000));
+        assert_eq!(models[1].context_tokens, None);
+        // Empty list: this server has nothing for us (a stale client_version).
+        assert_eq!(parse_models(&serde_json::json!({"models": []})), Some(vec![]));
+        // No list at all: we asked something that is not this backend. An
+        // endpoint left pointing at OpenRouter returns exactly this.
+        assert_eq!(
+            parse_models(&serde_json::json!({"data": [{"id": "x"}], "total_count": 1})),
+            None
+        );
     }
 
     #[tokio::test]

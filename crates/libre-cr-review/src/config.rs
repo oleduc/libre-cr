@@ -315,6 +315,34 @@ impl Config {
 }
 
 /// Expand `~/` and environment variables in a path string.
+/// Caps that suit a context window of `context_tokens`.
+///
+/// Provider-agnostic on purpose: *what* a model's window is comes from the
+/// provider (`Provider::list_models` → `ModelInfo::context_tokens`), and how
+/// that window is divided into caps is one policy, here, shared by all of
+/// them.
+///
+/// The caps are in characters and a window is in tokens, so the conversion is
+/// explicit rather than buried: ~3.5 chars per token for source code, which is
+/// denser than prose. The fractions are the ones the hand-tuned defaults
+/// already imply at a 262k window, so deriving on an existing setup reproduces
+/// roughly what is configured today instead of quietly re-tuning it.
+pub fn derive_limits(context_tokens: u64) -> libre_cr_common::http_api::DerivedLimits {
+    const CHARS_PER_TOKEN: f32 = 3.5;
+    let chars = context_tokens as f64 * CHARS_PER_TOKEN as f64;
+    let part = |fraction: f64, floor: usize| ((chars * fraction) as usize).max(floor);
+    libre_cr_common::http_api::DerivedLimits {
+        context_tokens,
+        chars_per_token: CHARS_PER_TOKEN,
+        // Floors keep a tiny window from producing caps the agent loop cannot
+        // make progress under (`TOOL_RESULT_FLOOR_CHARS` is 2,000).
+        max_tool_result_chars: part(0.020, 4_000),
+        max_turn_tool_chars: part(0.130, 20_000),
+        replay_result_chars: part(0.020, 4_000),
+        replay_turn_chars: part(0.045, 8_000),
+    }
+}
+
 pub fn expand_path(s: &str) -> PathBuf {
     let expanded = shellexpand::tilde(s).to_string();
     PathBuf::from(expanded)
@@ -384,6 +412,34 @@ event = { type = "text_delta", text = "hi" }
                 "default_path must not use Application Support: {s}"
             );
         }
+    }
+
+    /// Deriving at the window the current defaults were tuned for must land
+    /// near those defaults — otherwise "derive" silently re-tunes a working
+    /// setup the first time someone presses it.
+    #[test]
+    fn derived_caps_match_the_hand_tuned_defaults_at_262k() {
+        let d = derive_limits(262_144);
+        let l = Limits::default();
+        let near = |got: usize, want: usize| {
+            let diff = got.abs_diff(want) as f64 / want as f64;
+            assert!(diff < 0.10, "derived {got} is not within 10% of {want}");
+        };
+        near(d.max_tool_result_chars, l.max_tool_result_chars);
+        near(d.max_turn_tool_chars, l.max_turn_tool_chars);
+        near(d.replay_result_chars, l.replay_result_chars);
+        near(d.replay_turn_chars, l.replay_turn_chars);
+    }
+
+    #[test]
+    fn derived_caps_scale_with_the_window_and_have_floors() {
+        let small = derive_limits(128_000);
+        let big = derive_limits(872_000);
+        assert!(small.max_turn_tool_chars < big.max_turn_tool_chars);
+        // A toy window still leaves the loop room to make progress.
+        let tiny = derive_limits(4_000);
+        assert_eq!(tiny.max_tool_result_chars, 4_000);
+        assert_eq!(tiny.max_turn_tool_chars, 20_000);
     }
 
     #[test]
