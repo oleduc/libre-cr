@@ -201,13 +201,29 @@ pub fn save_tokens(path: &Path, tokens: &Tokens) -> Result<()> {
         std::fs::create_dir_all(dir).map_err(|e| Error::Internal(format!("create dir: {e}")))?;
     }
     let json = serde_json::to_vec_pretty(tokens)?;
-    std::fs::write(path, json).map_err(|e| Error::Internal(format!("write tokens: {e}")))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        // Created private, not made private afterwards: `fs::write` would
+        // create it `0666 & !umask` and leave the tokens world-readable for
+        // the window before the chmod. `mode` covers a new file; the explicit
+        // set_permissions covers one that already existed, and both run before
+        // anything is written.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| Error::Internal(format!("open tokens: {e}")))?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| Error::Internal(format!("chmod tokens: {e}")))?;
+        f.write_all(&json)
+            .map_err(|e| Error::Internal(format!("write tokens: {e}")))?;
     }
+    #[cfg(not(unix))]
+    std::fs::write(path, json).map_err(|e| Error::Internal(format!("write tokens: {e}")))?;
     Ok(())
 }
 
@@ -281,7 +297,11 @@ async fn post_token(
 /// the port is checked before the user is sent to OpenAI, so a port clash is
 /// reported instead of producing a redirect that lands nowhere.
 pub struct PendingSignIn {
-    listener: tokio::net::TcpListener,
+    /// Both loopback families where possible. `REDIRECT_URI` says `localhost`,
+    /// and which address that resolves to is the browser's choice: binding
+    /// only `127.0.0.1` leaves a machine that picks `::1` waiting out the
+    /// full sign-in timeout for a callback that was delivered elsewhere.
+    listeners: Vec<tokio::net::TcpListener>,
     state: String,
 }
 
@@ -301,17 +321,26 @@ pub fn clear_pending() {
 /// Bind OpenAI's registered callback port. Call before handing the authorize
 /// URL to the user.
 pub async fn begin_callback(state: &str) -> Result<PendingSignIn> {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
-        .await
-        .map_err(|e| {
-            Error::Validation(format!(
-                "port {CALLBACK_PORT} is not available ({e}); it is the redirect URI OpenAI \
-                 registered for this client, so the sign-in cannot use another one"
-            ))
-        })?;
+    let mut listeners = Vec::new();
+    let mut last_error = None;
+    // Loopback only, both families. One failing is normal (a host without
+    // IPv6, or a port already taken on one family); both failing is not.
+    for addr in ["127.0.0.1", "::1"] {
+        match tokio::net::TcpListener::bind((addr, CALLBACK_PORT)).await {
+            Ok(l) => listeners.push(l),
+            Err(e) => last_error = Some(format!("{addr}: {e}")),
+        }
+    }
+    if listeners.is_empty() {
+        let detail = last_error.unwrap_or_else(|| "no loopback address available".into());
+        return Err(Error::Validation(format!(
+            "port {CALLBACK_PORT} is not available ({detail}); it is the redirect URI OpenAI \
+             registered for this client, so the sign-in cannot use another one"
+        )));
+    }
     PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(PendingSignIn {
-        listener,
+        listeners,
         state: state.to_string(),
     })
 }
@@ -325,20 +354,29 @@ pub async fn finish_callback(
 ) -> Result<Tokens> {
     let code = tokio::time::timeout(
         std::time::Duration::from_secs(300),
-        await_code(&pending.listener, &pending.state),
+        await_code(&pending.listeners, &pending.state),
     )
     .await
     .map_err(|_| Error::Validation("sign-in timed out".into()))??;
     exchange_code(client, &code, verifier).await
 }
 
-async fn await_code(listener: &tokio::net::TcpListener, expected_state: &str) -> Result<String> {
+/// The next connection on whichever loopback listener receives one.
+async fn accept_any(listeners: &[tokio::net::TcpListener]) -> Result<tokio::net::TcpStream> {
+    let accepts = listeners
+        .iter()
+        .map(|l| Box::pin(l.accept()))
+        .collect::<Vec<_>>();
+    let (result, _, _) = futures::future::select_all(accepts).await;
+    result
+        .map(|(sock, _)| sock)
+        .map_err(|e| Error::Internal(format!("callback accept: {e}")))
+}
+
+async fn await_code(listeners: &[tokio::net::TcpListener], expected_state: &str) -> Result<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     loop {
-        let (mut sock, _) = listener
-            .accept()
-            .await
-            .map_err(|e| Error::Internal(format!("callback accept: {e}")))?;
+        let mut sock = accept_any(listeners).await?;
         let mut buf = vec![0u8; 8192];
         let n = sock
             .read(&mut buf)

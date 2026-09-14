@@ -375,6 +375,9 @@ struct ModelInfo {
     display_name: Option<String>,
     /// The model's context window, when this provider can state one.
     context_tokens: Option<u64>,
+    /// The most it will emit in one answer, when stated. Bounds the suggested
+    /// `max_tokens`; see § Models.
+    max_output_tokens: Option<u64>,
 }
 ```
 

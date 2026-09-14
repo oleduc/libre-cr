@@ -56,18 +56,25 @@ pub struct ChatGptProvider {
 }
 
 impl ChatGptProvider {
-    pub fn new(model: String, token_path: PathBuf) -> Self {
-        Self {
+    pub fn new(model: String, token_path: PathBuf) -> Result<Self> {
+        Ok(Self {
             id: "chatgpt".into(),
+            // `timeout` is a deadline on the *whole* request, body included, so
+            // it would kill a healthy SSE stream at 120 s — and a review turn
+            // streams for longer than that. `read_timeout` resets on every
+            // chunk, which is the thing actually worth detecting: a stream that
+            // has stalled. A builder failure is returned rather than swallowed
+            // into a default client with no timeouts at all.
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .read_timeout(std::time::Duration::from_secs(120))
                 .build()
-                .unwrap_or_default(),
+                .map_err(|e| Error::Internal(format!("chatgpt http client: {e}")))?,
             base: DEFAULT_BASE.to_string(),
             model,
             token_path,
             tokens: Arc::new(Mutex::new(None)),
-        }
+        })
     }
 
     pub fn with_base(mut self, base: String) -> Self {
@@ -576,7 +583,7 @@ mod tests {
     use super::*;
 
     fn provider() -> ChatGptProvider {
-        ChatGptProvider::new("gpt-5.2-codex".into(), PathBuf::from("/nonexistent"))
+        ChatGptProvider::new("gpt-5.2-codex".into(), PathBuf::from("/nonexistent")).unwrap()
     }
 
     #[test]

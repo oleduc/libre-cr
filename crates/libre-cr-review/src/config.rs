@@ -92,6 +92,11 @@ pub struct ProviderConfig {
     pub endpoint: String,
     /// Where the `chatgpt` kind keeps its OAuth tokens. Configurable so tests
     /// (and a second daemon) never share one sign-in by accident.
+    ///
+    /// Settable from `review.toml` only — deliberately *not* part of the
+    /// `POST /v1/config` patch. `save_tokens` creates or truncates whatever
+    /// path this names, so accepting it over HTTP would let a paired caller
+    /// choose which file the daemon overwrites.
     #[serde(default = "default_chatgpt_token_file")]
     pub chatgpt_token_file: String,
 }

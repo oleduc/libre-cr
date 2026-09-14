@@ -552,6 +552,8 @@ async fn provider_capabilities_are_declared_per_kind() {
         "maxTokensEl.setAttribute(\"max\", cap);",
         // The suggestion comes from the daemon, not a constant in the page.
         "maxTokensEl.value = d.max_tokens;",
+        // Model metadata must not outlive the provider that reported it.
+        "modelContext = {};",
     ] {
         assert!(page.contains(needle), "config UI must use {needle}");
     }
@@ -657,18 +659,15 @@ async fn limits_can_be_derived_from_a_context_window_without_being_stored() {
 /// test would read the developer's own sign-in and call OpenAI for real.
 #[tokio::test]
 async fn chatgpt_provider_reports_signed_out_and_offers_sign_in() {
-    let h = common::start_server_default().await;
-    let c = reqwest::Client::new();
     let dir = tempfile::tempdir().unwrap();
     let token_file = dir.path().join("chatgpt-auth.json");
+    let h = common::start_server_with_chatgpt_token_file(&token_file).await;
+    let c = reqwest::Client::new();
 
     let resp = c
         .post(url(h.addr, "/v1/provider/models"))
         .bearer_auth(&h.token)
-        .json(&json!({"provider": {
-            "kind": "chatgpt",
-            "chatgpt_token_file": token_file.to_str().unwrap(),
-        }}))
+        .json(&json!({"provider": {"kind": "chatgpt"}}))
         .send()
         .await
         .unwrap();
@@ -709,4 +708,21 @@ async fn chatgpt_provider_reports_signed_out_and_offers_sign_in() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 401, "status must require the token");
+
+    // The token path is local config only: `save_tokens` creates or truncates
+    // whatever it names, so it is neither patchable nor reported over HTTP.
+    // `apply_provider_patch` ignoring it is unit-tested in `server::routes`.
+    let cfg: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        cfg["provider"].get("chatgpt_token_file").is_none(),
+        "the token path is not part of the HTTP config surface"
+    );
 }

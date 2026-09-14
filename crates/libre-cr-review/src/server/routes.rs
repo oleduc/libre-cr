@@ -423,9 +423,6 @@ fn apply_provider_patch(
     if let Some(s) = p.get("endpoint").and_then(|s| s.as_str()) {
         cfg.provider.endpoint = s.to_string();
     }
-    if let Some(s) = p.get("chatgpt_token_file").and_then(|s| s.as_str()) {
-        cfg.provider.chatgpt_token_file = s.to_string();
-    }
     if let Some(s) = p.get("api_key").and_then(|s| s.as_str()) {
         // An explicit empty string clears the saved key (→ env-var fallback).
         cfg.provider.api_key_enc = if s.is_empty() {
@@ -602,6 +599,32 @@ async fn provider_detected() -> Json<DetectedCredentials> {
         anthropic: present("ANTHROPIC_API_KEY"),
         openai: present("OPENAI_API_KEY"),
     })
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    /// `save_tokens` creates or truncates whatever path this names, so a
+    /// caller holding the bearer token must not be able to choose it over
+    /// HTTP — it is `review.toml` only. (CodeRabbit, PR #6: path traversal.)
+    #[test]
+    fn provider_patch_cannot_move_the_chatgpt_token_file() {
+        let mut cfg = crate::config::Config::default();
+        let before = cfg.provider.chatgpt_token_file.clone();
+        let key = crate::storage::InstallKey::from_bytes([0u8; 32]);
+        apply_provider_patch(
+            &mut cfg,
+            &json!({"provider": {
+                "model": "gpt-5.6-sol",
+                "chatgpt_token_file": "/etc/cron.d/anything",
+            }}),
+            &key,
+        )
+        .unwrap();
+        assert_eq!(cfg.provider.model, "gpt-5.6-sol", "other fields still apply");
+        assert_eq!(cfg.provider.chatgpt_token_file, before);
+    }
 }
 
 /// Start a ChatGPT sign-in: generate PKCE, bind OpenAI's registered callback
@@ -1138,6 +1161,11 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   kindEl.addEventListener("change", function () {
     endpointEl.value = "";
     modelEl.value = "";
+    // Context windows and output ceilings belong to the provider that
+    // reported them. Two providers can serve the same model id with different
+    // limits, so carrying these across would size caps from the wrong model.
+    modelContext = {};
+    modelMaxOutput = {};
     modelSelect.innerHTML = '<option value="__manual__">Other / type manually</option>';
     modelSelect.value = "__manual__";
     modelStatus.textContent = "";
@@ -1193,6 +1221,10 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
 
   document.getElementById("fetchModels").addEventListener("click", function () {
     setModelStatus("Fetching models…", false);
+    // Dropped before the request, not after a successful one: a refresh that
+    // fails must not leave the previous provider's numbers in place.
+    modelContext = {};
+    modelMaxOutput = {};
     fetch("/v1/provider/models", {
       method: "POST", headers: headers,
       body: JSON.stringify({ provider: providerPatch() }),
