@@ -387,6 +387,41 @@ spec written before the code, checked against reality *before* the code landed,
 with the two things it admitted not knowing resolved rather than quietly
 inherited. One of the two turned out to be wrong.
 
+## 2026-09-11 — ChatGPT subscription provider built
+
+Specified in the entry's own commit, then implemented against it. Two things
+the implementation changed, both recorded in place in `04`:
+
+| Spec | Old | New | |
+|---|---|---|---|
+| `04` § ChatGPT subscription provider → Tokens | Token file "encrypted with the same install key as `api_key_enc`" | Plain JSON at `0600`, with the reason: the install key sits in the same directory on the same disk, so encrypting there is obfuscation; `api_key_enc` is encrypted because `review.toml` is a file people open and paste | Corrected |
+| `04` § ChatGPT subscription provider → Requests | (silent on sampling parameters) | `temperature` and the token cap are not sent — the reasoning models this backend serves reject them | New |
+
+Also sharpened from implementation: the streaming *item* id is not the tool
+*call* id, and addressing a result to the wrong one breaks the tool loop
+silently. That distinction is now in the spec because it is the kind of thing
+that is obvious for an hour and invisible afterwards.
+
+The status marker moved from "specified, not built" to "built" in the same
+change as the code, which is the practice this record exists to enforce.
+
+## 2026-09-11 — the model list was fiction; corrected against the API
+
+| Spec | Old | New | |
+|---|---|---|---|
+| `04` § ChatGPT subscription provider → Models | "That backend exposes no `/v1/models`, so `list_models` returns a built-in catalogue" | `GET {base}/models?client_version=<v>`, with the version gate and its measured behaviour, and an empty list reported as a stale client | Corrected |
+| `04` § ChatGPT subscription provider → Requests | (fixed token path) | `provider.chatgpt_token_file`, so a test run cannot read the developer's own sign-in | New |
+
+Both halves of the old claim were wrong: the endpoint exists, and the
+catalogue shipped model ids (`gpt-5.2-codex`, `gpt-5.1`) that do not exist on
+it — written from training data, not from the API, and never checked against a
+live account. The user found it within a day: "I only see pretty old models".
+
+This is the same failure the grounding spec describes for *answers* — recalled
+detail presented as observed fact — committed in a spec, by the assistant
+writing it. The correction is recorded here rather than quietly patched
+because the pattern matters more than the fix.
+
 ## What this record does not cover
 
 - **Nothing was verified by running the system.** The audit and these

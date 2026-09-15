@@ -37,14 +37,8 @@ impl Tool for GitLog {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::invalid("repo_path required"))?,
             );
-            let file = input
-                .get("file")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let r = input
-                .get("ref")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let file = crate::tools::optional_arg(&input, "file");
+            let r = crate::tools::optional_arg(&input, "ref");
             let max_count = input
                 .get("max_count")
                 .and_then(|v| v.as_u64())
@@ -109,10 +103,7 @@ impl Tool for GitBlame {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::invalid("file required"))?
                 .to_string();
-            let r = input
-                .get("ref")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let r = crate::tools::optional_arg(&input, "ref");
             let start = input
                 .get("start_line")
                 .and_then(|v| v.as_u64())
@@ -173,10 +164,7 @@ impl Tool for GitShow {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::invalid("sha required"))?
                 .to_string();
-            let file = input
-                .get("file")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let file = crate::tools::optional_arg(&input, "file");
             let r = show::git_show(&repo_path, &sha, file.as_deref()).await?;
             Ok(json!({
                 "ok": true,

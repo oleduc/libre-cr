@@ -172,10 +172,7 @@ impl Tool for CloneRepo {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::invalid("remote_url required"))?
                 .to_string();
-            let target_dir = input
-                .get("target_dir")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let target_dir = crate::tools::optional_arg(&input, "target_dir");
 
             let repo_id = canonicalize_remote_url(&url)
                 .ok_or_else(|| ToolError::invalid(format!("unparseable url: {url}")))?;

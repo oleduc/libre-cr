@@ -1,17 +1,20 @@
 //! Provider abstraction. Mirrors `specs/04-review-daemon.md` § LLM Provider Layer.
 
 mod anthropic;
+mod chatgpt;
+pub mod chatgpt_auth;
 mod mock;
 mod openai_compat;
 
 pub use anthropic::AnthropicProvider;
+pub use chatgpt::ChatGptProvider;
 pub use mock::MockProvider;
 pub use openai_compat::OpenAICompatProvider;
 
 /// A model offered by a provider. Single definition lives in
 /// `libre-cr-common` so the provider layer and the HTTP wire contract can't
 /// drift; we re-export it here for the provider modules.
-pub use libre_cr_common::http_api::ModelInfo;
+pub use libre_cr_common::http_api::{ModelInfo, ProviderCapabilities};
 
 use std::sync::Arc;
 
@@ -109,7 +112,29 @@ pub trait Provider: Send + Sync {
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         Err(Error::Validation("model listing not supported".into()))
     }
+
+    /// Which config fields this provider actually reads. The default supports
+    /// everything; a provider overrides to say what it ignores.
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default()
+    }
 }
+
+/// Capabilities per provider kind, for the config UI — which needs them for
+/// the kind the user is *considering*, before any provider is built from it.
+/// The match mirrors `build_provider`: one registry of kinds, not two.
+pub fn capabilities_for_kind(kind: &str) -> Option<ProviderCapabilities> {
+    match kind {
+        "mock" => Some(mock::CAPABILITIES),
+        "anthropic" => Some(anthropic::CAPABILITIES),
+        "openai_compat" => Some(openai_compat::CAPABILITIES),
+        "chatgpt" => Some(chatgpt::CAPABILITIES),
+        _ => None,
+    }
+}
+
+/// Every kind the config UI can offer, in the order it offers them.
+pub const PROVIDER_KINDS: &[&str] = &["mock", "anthropic", "openai_compat", "chatgpt"];
 
 /// Accept either a provider *base* URL (`https://host/v1`, what every
 /// OpenAI-compatible service documents and what our docs promise) or the full
@@ -179,6 +204,17 @@ pub fn build_provider(cfg: &Config, install_key: &InstallKey) -> Result<Arc<dyn 
                 cfg.provider.temperature,
             )
             .with_endpoint(cfg.provider.endpoint.clone());
+            Ok(Arc::new(p))
+        }
+        // Never reached by fallback: `chatgpt` is only ever selected
+        // explicitly (see `04-review-daemon.md` § ChatGPT subscription
+        // provider — personal use, so nothing may drift into it).
+        "chatgpt" => {
+            let p = ChatGptProvider::new(
+                cfg.provider.model.clone(),
+                crate::config::expand_path(&cfg.provider.chatgpt_token_file),
+            )?
+            .with_base(cfg.provider.endpoint.clone());
             Ok(Arc::new(p))
         }
         other => Err(Error::Validation(format!("unknown provider kind: {other}"))),

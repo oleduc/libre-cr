@@ -73,11 +73,12 @@ The verbs are not magic. They are well-tuned prompts that drive the same agent l
 
 ### LLM provider and credentials
 
-The user picks a provider in the daemon's config UI (`/config-ui`). Three provider kinds are built in:
+The user picks a provider in the daemon's config UI (`/config-ui`). Four provider kinds:
 
 - **`mock`** — no network; canned responses for local development and tests.
 - **`anthropic`** — official Messages API.
 - **`openai_compat`** — OpenAI-compatible chat completions (api.openai.com, OpenRouter, Ollama, any compatible endpoint).
+- **`chatgpt`** — a ChatGPT Plus/Pro subscription, signed in through OpenAI's published Codex OAuth flow. Spends the subscription instead of API credit. Personal use only; see `04-review-daemon.md` § ChatGPT subscription provider.
 
 Credential resolution for `anthropic` / `openai_compat`: a key saved through the config UI (stored encrypted) always wins; if none is saved, the daemon falls back to the standard ambient environment variable (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`). The config UI reports which ambient credentials it detected so the user can leave the key field blank. For `anthropic`, the config UI can also fetch the live model list from the provider so the user picks a model instead of typing an id.
 

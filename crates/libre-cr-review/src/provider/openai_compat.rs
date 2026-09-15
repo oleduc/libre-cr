@@ -13,7 +13,9 @@ use serde_json::json;
 
 use crate::error::{Error, Result};
 
-use super::{ContentBlock, Message, ModelInfo, Provider, Role, StreamEvent, ToolSchema};
+use super::{
+    ContentBlock, Message, ModelInfo, Provider, ProviderCapabilities, Role, StreamEvent, ToolSchema,
+};
 
 /// Derive the `/models` URL from the configured chat-completions endpoint.
 /// The stored endpoint is `.../v1/chat/completions`; swap a trailing
@@ -46,12 +48,32 @@ fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
                     Some(ModelInfo {
                         id,
                         display_name: None,
+                        // OpenAI's own `/v1/models` states no context window;
+                        // OpenRouter's does, as `context_length`. Absent stays
+                        // absent rather than being guessed from the model id.
+                        context_tokens: m.get("context_length").and_then(|n| n.as_u64()),
+                        // OpenRouter states the output cap under the provider
+                        // actually serving the model, which is the number that
+                        // binds — not the family's headline figure.
+                        max_output_tokens: m
+                            .get("top_provider")
+                            .and_then(|t| t.get("max_completion_tokens"))
+                            .and_then(|n| n.as_u64()),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
+/// Everything applies; the endpoint is the point of this kind.
+pub const CAPABILITIES: ProviderCapabilities = ProviderCapabilities {
+    api_key: true,
+    endpoint: true,
+    temperature: true,
+    max_tokens: true,
+    model: true,
+    model_list: true,
+};
 
 pub struct OpenAICompatProvider {
     id: String,
@@ -176,6 +198,10 @@ impl OpenAICompatProvider {
 
 #[async_trait]
 impl Provider for OpenAICompatProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        CAPABILITIES
+    }
+
     fn id(&self) -> &str {
         &self.id
     }
@@ -596,7 +622,18 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "gpt-4o");
         assert_eq!(models[0].display_name, None);
+        assert_eq!(models[0].context_tokens, None, "openai states no window");
         assert_eq!(models[1].id, "gpt-4o-mini");
+
+        // OpenRouter's list does carry it, through the same interface.
+        let body = serde_json::json!({"data": [
+            {"id": "moonshotai/kimi-k3", "context_length": 1048576,
+             "top_provider": {"context_length": 1048576, "max_completion_tokens": 943718}}
+        ]});
+        let m = &parse_models(&body)[0];
+        assert_eq!(m.context_tokens, Some(1_048_576));
+        // The output cap is a different number from the window.
+        assert_eq!(m.max_output_tokens, Some(943_718));
     }
 
     #[test]

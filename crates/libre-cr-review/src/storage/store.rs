@@ -390,6 +390,21 @@ impl Store {
         Ok(out)
     }
 
+    /// Record the commit the checkout was actually prepared at.
+    ///
+    /// Written only after a prepare succeeds, so an interrupted one leaves the
+    /// old value (or none) and the next session open tries again. That is the
+    /// point of storing it: the decision is a comparison of state, not the
+    /// memory of an event that may never have been acted on.
+    pub async fn set_worktree_sha(&self, session_id: &str, sha: Option<&str>) -> Result<()> {
+        let conn = self.inner.lock().await;
+        conn.execute(
+            "UPDATE sessions SET worktree_sha=?1 WHERE session_id=?2",
+            params![sha, session_id],
+        )?;
+        Ok(())
+    }
+
     /// Update the session's stored `head_sha`. Returns the previous value,
     /// if any.
     pub async fn set_head_sha(
@@ -517,7 +532,7 @@ fn load_session(conn: &Connection, id: &str) -> Result<Session> {
     let row = conn
         .query_row(
             "SELECT session_id, pr_url, pr_owner, pr_repo, pr_number, repo_id,
-              worktree_path, pr_data, created_at, last_active_at, head_sha
+              worktree_path, pr_data, created_at, last_active_at, head_sha, worktree_sha
              FROM sessions WHERE session_id=?1",
             params![id],
             |r| {
@@ -534,6 +549,7 @@ fn load_session(conn: &Connection, id: &str) -> Result<Session> {
                     created_at: r.get(8)?,
                     last_active_at: r.get(9)?,
                     head_sha: r.get(10).ok().flatten(),
+                    worktree_sha: r.get(11).ok().flatten(),
                 })
             },
         )

@@ -224,8 +224,8 @@ export function ConversationTurn({
           ⚠ {truncated.length} tool result{truncated.length === 1 ? "" : "s"} hit the context
           limits and {truncated.length === 1 ? "was" : "were"} shortened
           {largestTruncation ? ` (largest: ${largestTruncation.toLocaleString()} chars)` : ""} —
-          this answer may be missing detail. Raise the caps in the extension's Options, under
-          Context limits.
+          this answer may be missing detail. Raise the caps in the daemon's config page
+          (the popup's "Configure daemon" link), under Context limits.
         </div>
       ) : null}
       {turn.thinking && turn.thinking.length > 0 ? (

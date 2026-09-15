@@ -44,10 +44,7 @@ impl Tool for ReadFile {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::invalid("file required"))?
                 .to_string();
-            let r = input
-                .get("ref")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let r = crate::tools::optional_arg(&input, "ref");
             let start_line = input.get("start_line").and_then(|v| v.as_u64());
             let end_line = input.get("end_line").and_then(|v| v.as_u64());
 
@@ -116,10 +113,7 @@ impl Tool for ListDir {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::invalid("dir required"))?
                 .to_string();
-            let r = input
-                .get("ref")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let r = crate::tools::optional_arg(&input, "ref");
 
             let entries = if let Some(r) = &r {
                 list_dir_at_ref(&repo_path, r, &dir)?
@@ -181,10 +175,7 @@ impl Tool for StatFile {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::invalid("file required"))?
                 .to_string();
-            let r = input
-                .get("ref")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let r = crate::tools::optional_arg(&input, "ref");
 
             let (bytes, size) = if let Some(r) = &r {
                 let b = read_blob_at_ref(&repo_path, r, &file)?;

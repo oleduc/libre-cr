@@ -145,6 +145,68 @@ pub struct ModelInfo {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// The model's context window, when the provider reports one. Absent is
+    /// "not stated", never "small" — the config UI offers to size the caps
+    /// from it only when it is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    /// The most tokens this model will *emit* in one response, when stated.
+    /// A different number from `context_tokens`, which covers input and output
+    /// together: sending the context window as `max_tokens` is rejected by
+    /// most APIs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+}
+
+/// What a provider actually reads from its config. The config UI disables the
+/// fields a provider ignores rather than letting a user tune a value that goes
+/// nowhere — `temperature` on a backend that rejects sampling parameters, an
+/// API key on one that signs in.
+///
+/// Declared by each provider (`Provider::capabilities`), never inferred from
+/// the kind string by the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapabilities {
+    pub api_key: bool,
+    pub endpoint: bool,
+    pub temperature: bool,
+    pub max_tokens: bool,
+    /// Whether the model field selects anything.
+    pub model: bool,
+    /// Whether `list_models` returns something.
+    pub model_list: bool,
+}
+
+impl Default for ProviderCapabilities {
+    /// Everything supported: a new provider opts *out* of what it ignores, so
+    /// forgetting to declare leaves fields editable rather than silently
+    /// greying them out.
+    fn default() -> Self {
+        Self {
+            api_key: true,
+            endpoint: true,
+            temperature: true,
+            max_tokens: true,
+            model: true,
+            model_list: true,
+        }
+    }
+}
+
+/// `GET /v1/limits/derive?context_tokens=N` — the character caps that suit a
+/// context window of that size. Returned for the config UI to *fill in*; the
+/// daemon stores nothing until the form is saved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DerivedLimits {
+    pub context_tokens: u64,
+    pub chars_per_token: f32,
+    /// Suggested `provider.max_tokens` — headroom for one answer, not a claim
+    /// on the window. Never above the model's stated output ceiling.
+    pub max_tokens: u32,
+    pub max_tool_result_chars: usize,
+    pub max_turn_tool_chars: usize,
+    pub replay_result_chars: usize,
+    pub replay_turn_chars: usize,
 }
 
 /// `POST /v1/provider/models`.
@@ -162,6 +224,24 @@ pub struct ModelsResponse {
 pub struct DetectedCredentials {
     pub anthropic: bool,
     pub openai: bool,
+}
+
+/// `POST /v1/provider/chatgpt/login` — the URL the user opens to sign in.
+/// The daemon is already listening for the callback when this returns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatGptLoginResponse {
+    pub authorize_url: String,
+}
+
+/// `GET /v1/provider/chatgpt/status`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatGptStatus {
+    pub signed_in: bool,
+    /// The ChatGPT account the stored tokens belong to, when signed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    /// True while a sign-in is waiting on the browser callback.
+    pub pending: bool,
 }
 
 /// One verb in `GET /v1/verbs`.
@@ -218,10 +298,15 @@ mod tests {
         let m = ModelInfo {
             id: "gpt-4o".into(),
             display_name: None,
+            context_tokens: None,
+            max_output_tokens: None,
         };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["id"], "gpt-4o");
         assert!(v.get("display_name").is_none());
+        // A provider that cannot state a window omits the field; the config UI
+        // reads absent as "unknown" and leaves cap sizing unavailable.
+        assert!(v.get("context_tokens").is_none());
     }
 
     #[test]

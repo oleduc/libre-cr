@@ -18,6 +18,11 @@ pub struct Session {
     pub last_active_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_sha: Option<String>,
+    /// The commit the checkout is on, as the code daemon reported it after
+    /// preparing. Compared against the scraped `head_sha` to decide whether the
+    /// worktree still matches the PR the reviewer is looking at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_sha: Option<String>,
 }
 
 /// Wire conversion for the typed HTTP responses in `libre-cr-common`.

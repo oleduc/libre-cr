@@ -31,6 +31,17 @@ pub async fn start_server_default() -> Harness {
     start_server_with_provider(Arc::new(MockProvider::new(vec![]))).await
 }
 
+/// A server whose `chatgpt` token file points somewhere disposable. The path
+/// is config-file-only (it is not in the HTTP patch, by design — `save_tokens`
+/// truncates whatever it names), so a test that must not touch the developer's
+/// real sign-in sets it here.
+pub async fn start_server_with_chatgpt_token_file(path: &std::path::Path) -> Harness {
+    let mut cfg = Config::default();
+    cfg.mock.code_intel = true;
+    cfg.provider.chatgpt_token_file = path.to_string_lossy().into_owned();
+    start_server_with(cfg, Arc::new(MockProvider::new(vec![])), None).await
+}
+
 pub async fn start_server_with_provider(provider: Arc<dyn Provider>) -> Harness {
     let mut cfg = Config::default();
     cfg.mock.code_intel = true;

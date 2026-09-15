@@ -46,6 +46,7 @@ async-trait = { workspace = true }
 hex = { workspace = true }
 http = { workspace = true }
 subtle = "2"
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = { workspace = true }

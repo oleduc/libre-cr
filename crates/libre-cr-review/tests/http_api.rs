@@ -500,3 +500,229 @@ async fn config_limits_round_trip_and_reject_out_of_range() {
         .unwrap();
     assert_eq!(still["limits"]["max_tool_result_chars"], 50_000);
 }
+
+/// Each provider declares what it reads, and the UI greys out the rest — a
+/// value that goes nowhere reads as configuration
+/// (`specs/04-review-daemon.md` § Configuration UI).
+#[tokio::test]
+async fn provider_capabilities_are_declared_per_kind() {
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+
+    let caps: serde_json::Value = c
+        .get(url(h.addr, "/v1/provider/capabilities"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // The subscription backend signs in and rejects sampling parameters.
+    assert_eq!(caps["chatgpt"]["api_key"], false);
+    assert_eq!(caps["chatgpt"]["temperature"], false);
+    assert_eq!(caps["chatgpt"]["max_tokens"], false);
+    assert_eq!(caps["chatgpt"]["model"], true);
+    // A key-based provider reads all of it.
+    assert_eq!(caps["openai_compat"]["api_key"], true);
+    assert_eq!(caps["openai_compat"]["temperature"], true);
+    // Mock reaches no network at all.
+    assert_eq!(caps["mock"]["endpoint"], false);
+    assert!(caps.get("anthropic").is_some());
+
+    let page = c
+        .get(url(h.addr, "/config-ui"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for needle in [
+        "/v1/provider/capabilities",
+        "Not used by this provider, so not shown: ",
+        // Hidden, not greyed out — and [hidden] has to beat the grid's display.
+        "fields[key].hidden = !supported;",
+        "[hidden] { display: none !important; }",
+        // The model's output ceiling binds the field, and anything lower is
+        // the reviewer's call.
+        "leaves ~",
+        "maxTokensEl.setAttribute(\"max\", cap);",
+        // The suggestion comes from the daemon, not a constant in the page.
+        "maxTokensEl.value = d.max_tokens;",
+        // Model metadata must not outlive the provider that reported it.
+        "modelContext = {};",
+    ] {
+        assert!(page.contains(needle), "config UI must use {needle}");
+    }
+}
+
+/// Caps can be sized from a model's context window — computed by the daemon,
+/// filled into the form, and saved only when the user saves
+/// (`specs/04-review-daemon.md` § Configuration UI).
+#[tokio::test]
+async fn limits_can_be_derived_from_a_context_window_without_being_stored() {
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+
+    let before: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let derived: serde_json::Value = c
+        .get(url(h.addr, "/v1/limits/derive?context_tokens=872000"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // A window three times larger than the tuned default yields larger caps.
+    assert!(
+        derived["max_turn_tool_chars"].as_u64().unwrap()
+            > before["limits"]["max_turn_tool_chars"].as_u64().unwrap()
+    );
+    assert_eq!(derived["context_tokens"], 872_000);
+    // Headroom for one answer, not a claim on the window.
+    assert_eq!(derived["max_tokens"], 32_768);
+
+    // A model's stated output ceiling bounds the suggestion.
+    let bounded: serde_json::Value = c
+        .get(url(
+            h.addr,
+            "/v1/limits/derive?context_tokens=872000&max_output_tokens=8192",
+        ))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(bounded["max_tokens"], 8_192);
+
+    let after: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        before["limits"], after["limits"],
+        "deriving must not write config"
+    );
+
+    // Zero is rejected rather than producing caps of zero.
+    let resp = c
+        .get(url(h.addr, "/v1/limits/derive?context_tokens=0"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    let page = c
+        .get(url(h.addr, "/config-ui"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for needle in [
+        "Size these to the model",
+        "window.confirm(",
+        "/v1/limits/derive",
+    ] {
+        assert!(page.contains(needle), "config UI must offer {needle}");
+    }
+}
+
+/// Signed out, the subscription provider says so instead of reaching the
+/// network, and the config page offers the sign-in
+/// (`specs/04-review-daemon.md` § ChatGPT subscription provider).
+///
+/// The token file is pointed at a temp path on purpose: with the default the
+/// test would read the developer's own sign-in and call OpenAI for real.
+#[tokio::test]
+async fn chatgpt_provider_reports_signed_out_and_offers_sign_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = dir.path().join("chatgpt-auth.json");
+    let h = common::start_server_with_chatgpt_token_file(&token_file).await;
+    let c = reqwest::Client::new();
+
+    let resp = c
+        .post(url(h.addr, "/v1/provider/models"))
+        .bearer_auth(&h.token)
+        .json(&json!({"provider": {"kind": "chatgpt"}}))
+        .send()
+        .await
+        .unwrap();
+    // 502 is this daemon's existing mapping for `ProviderUnauthorized` — a
+    // credential problem at the provider, not at our own door (401 is ours).
+    assert_eq!(
+        resp.status(),
+        502,
+        "signed out must not be reported as success"
+    );
+
+    // The config page offers the kind and the sign-in control.
+    let page = c
+        .get(url(h.addr, "/config-ui"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for needle in [
+        "chatgpt (Plus/Pro subscription)",
+        "Sign in with ChatGPT",
+        "/v1/provider/chatgpt/status",
+        // Switching provider must clear the previous one's endpoint: a
+        // leftover OpenRouter URL sent a ChatGPT sign-in to the wrong server.
+        "kindEl.addEventListener(\"change\"",
+        "endpointEl.value = \"\";",
+    ] {
+        assert!(page.contains(needle), "config UI must offer {needle}");
+    }
+
+    // Status is readable and token-guarded.
+    let resp = c
+        .get(url(h.addr, "/v1/provider/chatgpt/status"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401, "status must require the token");
+
+    // The token path is local config only: `save_tokens` creates or truncates
+    // whatever it names, so it is neither patchable nor reported over HTTP.
+    // `apply_provider_patch` ignoring it is unit-tested in `server::routes`.
+    let cfg: serde_json::Value = c
+        .get(url(h.addr, "/v1/config"))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        cfg["provider"].get("chatgpt_token_file").is_none(),
+        "the token path is not part of the HTTP config surface"
+    );
+}

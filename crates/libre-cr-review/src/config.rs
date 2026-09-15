@@ -90,6 +90,19 @@ pub struct ProviderConfig {
     pub temperature: f32,
     #[serde(default)]
     pub endpoint: String,
+    /// Where the `chatgpt` kind keeps its OAuth tokens. Configurable so tests
+    /// (and a second daemon) never share one sign-in by accident.
+    ///
+    /// Settable from `review.toml` only — deliberately *not* part of the
+    /// `POST /v1/config` patch. `save_tokens` creates or truncates whatever
+    /// path this names, so accepting it over HTTP would let a paired caller
+    /// choose which file the daemon overwrites.
+    #[serde(default = "default_chatgpt_token_file")]
+    pub chatgpt_token_file: String,
+}
+
+pub fn default_chatgpt_token_file() -> String {
+    "~/.config/libre-cr/chatgpt-auth.json".into()
 }
 
 impl Default for ProviderConfig {
@@ -98,9 +111,17 @@ impl Default for ProviderConfig {
             kind: "mock".into(),
             api_key_enc: String::new(),
             model: "mock-model".into(),
-            max_tokens: 4096,
-            temperature: 0.0,
+            // Same floor as `suggested_max_tokens`: 4,096 can go entirely on
+            // a reasoning model's thinking.
+            max_tokens: 8192,
+            // Not zero. Greedy decoding makes a repeated tool call an
+            // absorbing state: identical context in, identical call out, and
+            // re-running it produces an identical observation. One question
+            // spent 27 identical greps that way. A little randomness breaks
+            // the tie without making tool routing erratic.
+            temperature: 0.2,
             endpoint: String::new(),
+            chatgpt_token_file: default_chatgpt_token_file(),
         }
     }
 }
@@ -306,6 +327,65 @@ impl Config {
 }
 
 /// Expand `~/` and environment variables in a path string.
+/// Caps that suit a context window of `context_tokens`.
+///
+/// Provider-agnostic on purpose: *what* a model's window is comes from the
+/// provider (`Provider::list_models` → `ModelInfo::context_tokens`), and how
+/// that window is divided into caps is one policy, here, shared by all of
+/// them.
+///
+/// The caps are in characters and a window is in tokens, so the conversion is
+/// explicit rather than buried: ~3.5 chars per token for source code, which is
+/// denser than prose. The fractions are the ones the hand-tuned defaults
+/// already imply at a 262k window, so deriving on an existing setup reproduces
+/// roughly what is configured today instead of quietly re-tuning it.
+pub fn derive_limits(
+    context_tokens: u64,
+    max_output_tokens: Option<u64>,
+) -> libre_cr_common::http_api::DerivedLimits {
+    const CHARS_PER_TOKEN: f32 = 3.5;
+    let chars = context_tokens as f64 * CHARS_PER_TOKEN as f64;
+    let part = |fraction: f64, floor: usize| ((chars * fraction) as usize).max(floor);
+    libre_cr_common::http_api::DerivedLimits {
+        context_tokens,
+        chars_per_token: CHARS_PER_TOKEN,
+        max_tokens: suggested_max_tokens(context_tokens, max_output_tokens),
+        // Floors keep a tiny window from producing caps the agent loop cannot
+        // make progress under (`TOOL_RESULT_FLOOR_CHARS` is 2,000).
+        max_tool_result_chars: part(0.020, 4_000),
+        max_turn_tool_chars: part(0.130, 20_000),
+        replay_result_chars: part(0.020, 4_000),
+        replay_turn_chars: part(0.045, 8_000),
+    }
+}
+
+/// Suggested `provider.max_tokens`: headroom for one long answer, bounded by
+/// the window it has to share and by whatever the model will actually emit.
+///
+/// A fraction of the context, because on Anthropic — and most
+/// OpenAI-compatible providers — `input + max_tokens` must fit the window, so
+/// a large reservation starves the conversation of input room. Floored at
+/// 8,192, because reasoning models spend thinking tokens against this and
+/// 4,096 can go entirely on thinking, truncating the answer before it writes a
+/// visible word. Ceilinged, because past a point more headroom buys nothing:
+/// an answer to a review question is not 200k tokens long.
+pub fn suggested_max_tokens(context_tokens: u64, max_output_tokens: Option<u64>) -> u32 {
+    const FRACTION: f64 = 0.08;
+    const FLOOR: u64 = 8_192;
+    const CEILING: u64 = 32_768;
+    let want = ((context_tokens as f64 * FRACTION) as u64).clamp(FLOOR, CEILING);
+    // The floor must not outgrow the window it shares: on a toy context, half
+    // is already generous.
+    let want = want.min((context_tokens / 2).max(1));
+    // The model's own ceiling wins over every heuristic, including the floor:
+    // asking for more than it will emit is an error, not a preference.
+    let bounded = match max_output_tokens {
+        Some(cap) if cap > 0 => want.min(cap),
+        _ => want,
+    };
+    bounded.max(1) as u32
+}
+
 pub fn expand_path(s: &str) -> PathBuf {
     let expanded = shellexpand::tilde(s).to_string();
     PathBuf::from(expanded)
@@ -351,7 +431,7 @@ event = { type = "text_delta", text = "hi" }
         let cfg: Config = toml::from_str(toml_src).expect("partial config must parse");
         assert_eq!(cfg.provider.kind, "mock");
         assert_eq!(cfg.provider.model, "mock");
-        assert_eq!(cfg.provider.max_tokens, 4096); // filled from Default
+        assert_eq!(cfg.provider.max_tokens, 8192); // filled from Default
         assert!(cfg.mock.code_intel);
         assert_eq!(cfg.mock.provider_script.len(), 1);
     }
@@ -375,6 +455,65 @@ event = { type = "text_delta", text = "hi" }
                 "default_path must not use Application Support: {s}"
             );
         }
+    }
+
+    #[test]
+    fn default_temperature_is_not_greedy() {
+        assert!(
+            ProviderConfig::default().temperature > 0.0,
+            "temperature 0 makes a repeated tool call an absorbing state"
+        );
+    }
+
+    /// Deriving at the window the current defaults were tuned for must land
+    /// near those defaults — otherwise "derive" silently re-tunes a working
+    /// setup the first time someone presses it.
+    #[test]
+    fn suggested_max_tokens_is_headroom_not_a_claim_on_the_window() {
+        // A big window does not justify a big reservation: input room is the
+        // scarce half, and answers are not 200k tokens long.
+        assert_eq!(suggested_max_tokens(1_048_576, None), 32_768);
+        assert_eq!(suggested_max_tokens(272_000, None), 21_760);
+        assert_eq!(suggested_max_tokens(128_000, None), 10_240);
+        // Floored: a reasoning model can spend 4,096 on thinking alone, so
+        // the floor leaves room to think *and* answer.
+        assert_eq!(suggested_max_tokens(128_000, None), 10_240);
+        assert_eq!(suggested_max_tokens(64_000, None), 8_192);
+        // …but never more than half a small window.
+        assert_eq!(suggested_max_tokens(16_000, None), 8_000);
+        // The model's stated ceiling beats the heuristic in both directions.
+        assert_eq!(suggested_max_tokens(1_048_576, Some(943_718)), 32_768);
+        assert_eq!(suggested_max_tokens(1_048_576, Some(8_192)), 8_192);
+        assert_eq!(suggested_max_tokens(16_000, Some(2_048)), 2_048);
+        // Whatever happens, it fits the window it shares.
+        for ctx in [8_000u64, 128_000, 272_000, 1_048_576] {
+            assert!((suggested_max_tokens(ctx, None) as u64) < ctx);
+        }
+    }
+
+    #[test]
+    fn derived_caps_match_the_hand_tuned_defaults_at_262k() {
+        let d = derive_limits(262_144, None);
+        let l = Limits::default();
+        let near = |got: usize, want: usize| {
+            let diff = got.abs_diff(want) as f64 / want as f64;
+            assert!(diff < 0.10, "derived {got} is not within 10% of {want}");
+        };
+        near(d.max_tool_result_chars, l.max_tool_result_chars);
+        near(d.max_turn_tool_chars, l.max_turn_tool_chars);
+        near(d.replay_result_chars, l.replay_result_chars);
+        near(d.replay_turn_chars, l.replay_turn_chars);
+    }
+
+    #[test]
+    fn derived_caps_scale_with_the_window_and_have_floors() {
+        let small = derive_limits(128_000, None);
+        let big = derive_limits(872_000, None);
+        assert!(small.max_turn_tool_chars < big.max_turn_tool_chars);
+        // A toy window still leaves the loop room to make progress.
+        let tiny = derive_limits(4_000, None);
+        assert_eq!(tiny.max_tool_result_chars, 4_000);
+        assert_eq!(tiny.max_turn_tool_chars, 20_000);
     }
 
     #[test]

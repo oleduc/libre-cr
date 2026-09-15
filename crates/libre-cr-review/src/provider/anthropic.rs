@@ -14,7 +14,9 @@ use serde_json::json;
 
 use crate::error::{Error, Result};
 
-use super::{ContentBlock, Message, ModelInfo, Provider, Role, StreamEvent, ToolSchema};
+use super::{
+    ContentBlock, Message, ModelInfo, Provider, ProviderCapabilities, Role, StreamEvent, ToolSchema,
+};
 
 /// Derive the `/v1/models` URL from the configured Messages endpoint. The
 /// stored endpoint is the *messages* URL (`.../v1/messages`); we swap a
@@ -49,12 +51,27 @@ fn parse_models(body: &serde_json::Value) -> Vec<ModelInfo> {
                         .get("display_name")
                         .and_then(|s| s.as_str())
                         .map(|s| s.to_string());
-                    Some(ModelInfo { id, display_name })
+                    Some(ModelInfo {
+                        id,
+                        display_name,
+                        // Anthropic's model list states no context window.
+                        context_tokens: None,
+                        max_output_tokens: None,
+                    })
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
+/// Everything in the provider block applies.
+pub const CAPABILITIES: ProviderCapabilities = ProviderCapabilities {
+    api_key: true,
+    endpoint: true,
+    temperature: true,
+    max_tokens: true,
+    model: true,
+    model_list: true,
+};
 
 pub struct AnthropicProvider {
     id: String,
@@ -158,6 +175,10 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl Provider for AnthropicProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        CAPABILITIES
+    }
+
     fn id(&self) -> &str {
         &self.id
     }

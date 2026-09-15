@@ -51,10 +51,7 @@ impl Tool for Grep {
                         .filter_map(|x| x.as_str().map(|s| s.to_string()))
                         .collect()
                 });
-            let glob = input
-                .get("glob")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let glob = crate::tools::optional_arg(&input, "glob");
             let fixed_string = input
                 .get("fixed_string")
                 .and_then(|v| v.as_bool())

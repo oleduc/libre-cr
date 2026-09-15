@@ -62,6 +62,9 @@ interface AppState {
   message?: string;
   warnings: string[];
   prDiffChanged?: boolean;
+  /** Why the worktree is not ready: a first clone, or an update to newer
+   *  commits. The wait is the same; what the reviewer should expect is not. */
+  pendingAction?: string | null;
   headSha?: string | null;
 }
 
@@ -131,6 +134,7 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
             warnings: scrape.warnings,
             prDiffChanged: sess.pr_diff_changed,
             headSha: sess.head_sha,
+            pendingAction: sess.pending_action,
           });
           await pollUntilReady(c, sess.session_id, (error) => {
             if (cancelled) return;
@@ -163,10 +167,17 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
       setOpen(true);
       return;
     }
+    // A branch update is worth seeing: the reviewer has history on this PR (a
+    // stored head SHA is how we know it moved), so the panel is about to open
+    // anyway — and a message nobody can see is not a message.
+    if (state.status === "preparing" && state.pendingAction === "worktree_updating") {
+      setOpen(true);
+      return;
+    }
     if (state.status === "ready" && history !== null) {
       setOpen(history.length > 0);
     }
-  }, [open, state.status, history]);
+  }, [open, state.status, state.pendingAction, history]);
 
   // "Ask about this" on a review comment is an explicit request to ask, so it
   // opens the panel. A line/range selection does not: it rides GitHub's own
@@ -212,12 +223,22 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
           </>
         ) : null}
         {state.status === "preparing" ? (
-          <>
-            <div className="libre-cr-titlebar">Libre CR — preparing repo…</div>
-            <div className="libre-cr-banner">
-              Worktree is being prepared. The first visit to a repo clones it, which can take a minute.
-            </div>
-          </>
+          state.pendingAction === "worktree_updating" ? (
+            <>
+              <div className="libre-cr-titlebar">Libre CR — updating the branch…</div>
+              <div className="libre-cr-banner" data-testid="worktree-updating">
+                This PR has new commits. Fetching them before answering, so the code read here is
+                the code the page is showing.
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="libre-cr-titlebar">Libre CR — preparing repo…</div>
+              <div className="libre-cr-banner">
+                Worktree is being prepared. The first visit to a repo clones it, which can take a minute.
+              </div>
+            </>
+          )
         ) : null}
         {state.status === "error" ? (
           <>

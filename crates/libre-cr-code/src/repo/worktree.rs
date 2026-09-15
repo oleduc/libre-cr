@@ -231,6 +231,12 @@ impl WorktreeManager {
     }
 }
 
+/// The commit a worktree is on. Exposed so `prepare_worktree` can report what
+/// it actually prepared rather than what the caller hoped for.
+pub async fn head_sha(dir: &Path) -> Result<String, ToolError> {
+    rev_parse(dir, "HEAD").await
+}
+
 async fn rev_parse(dir: &Path, refspec: &str) -> Result<String, ToolError> {
     let out = Command::new("git")
         .arg("-C")

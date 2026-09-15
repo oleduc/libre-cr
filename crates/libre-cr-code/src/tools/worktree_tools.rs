@@ -42,22 +42,21 @@ impl Tool for PrepareWorktree {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::invalid("ref required"))?
                 .to_string();
-            let name = input
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let expected_sha = input
-                .get("expected_sha")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let name = crate::tools::optional_arg(&input, "name");
+            let expected_sha = crate::tools::optional_arg(&input, "expected_sha");
 
             let wt = ctx.worktrees.clone();
             let path = wt
                 .prepare(&repo_id, &r, name.as_deref(), expected_sha.as_deref())
                 .await?;
+            // The commit the worktree is actually on, so a caller can tell
+            // whether its checkout matches the revision it is reviewing
+            // without re-deriving it from what it asked for.
+            let head = crate::repo::worktree::head_sha(&path).await.ok();
             Ok(json!({
                 "ok": true,
                 "worktree_path": path.to_string_lossy(),
+                "head_sha": head,
             }))
         })
     }
@@ -80,10 +79,7 @@ impl Tool for ListWorktrees {
     }
     fn call<'a>(&'a self, ctx: Arc<ToolContext>, input: Value) -> ToolFuture<'a> {
         Box::pin(async move {
-            let repo_id = input
-                .get("repo_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let repo_id = crate::tools::optional_arg(&input, "repo_id");
             let list = ctx.registry.list_worktrees(repo_id.as_deref())?;
             let payload: Vec<Value> = list
                 .into_iter()

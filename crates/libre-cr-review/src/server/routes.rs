@@ -11,10 +11,10 @@ use axum::{
     Json, Router,
 };
 use libre_cr_common::http_api::{
-    CodeDaemonHealth, CodeDaemonHealthResponse, CreateSessionResponse, DetectedCredentials,
-    ExportResponse, HealthResponse, ListSessionsResponse, ModelsResponse, PairIssueResponse,
-    PairRedeemResponse, SearchHit, SearchResponse, SessionDetailResponse, SessionSummary,
-    VerbDescriptor,
+    ChatGptLoginResponse, ChatGptStatus, CodeDaemonHealth, CodeDaemonHealthResponse,
+    CreateSessionResponse, DerivedLimits, DetectedCredentials, ExportResponse, HealthResponse,
+    ListSessionsResponse, ModelsResponse, PairIssueResponse, PairRedeemResponse, SearchHit,
+    SearchResponse, SessionDetailResponse, SessionSummary, VerbDescriptor,
 };
 use libre_cr_common::{Selection, PROTOCOL_VERSION};
 use serde::Deserialize;
@@ -81,6 +81,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/config/validate", post(validate_config))
         .route("/v1/provider/models", post(provider_models))
         .route("/v1/provider/detected", get(provider_detected))
+        .route("/v1/provider/chatgpt/login", post(chatgpt_login))
+        .route("/v1/provider/chatgpt/status", get(chatgpt_status))
+        .route("/v1/limits/derive", get(limits_derive))
+        .route("/v1/provider/capabilities", get(provider_capabilities))
         .route("/v1/health", get(health))
         .route("/v1/health/code-daemon", get(health_code_daemon))
         .route("/v1/pair", post(pair))
@@ -119,6 +123,41 @@ struct CreateSessionBody {
     pr_data: serde_json::Value,
 }
 
+/// Is the session's checkout usable, and if not, is that because it has fallen
+/// behind rather than never existed?
+///
+/// A worktree that exists but sits on an older commit is **not** ready: the
+/// point of the checkout is that `get_pr_diff`, `read_file` and `grep` read the
+/// code the page is showing. Answering from a tree known to have moved is the
+/// failure the grounding rules exist to prevent, so the session waits for the
+/// fetch — and says which wait it is, because "cloning a repo" and "catching up
+/// to new commits" set different expectations.
+///
+/// The comparison is `worktree_sha` (what the checkout is on) against the
+/// scraped SHA — **not** the scraped SHA against the last one stored. An
+/// event-based check is lost the moment anything records the new SHA without
+/// completing the fetch: found in the field, where a page load on an older
+/// binary stored the new SHA, did nothing with it, and left every later load
+/// comparing that SHA to itself and concluding the four-day-old checkout was
+/// current.
+///
+/// A checkout whose SHA is unknown (prepared before this was recorded, or a
+/// prepare that could not report one) counts as stale: one refresh settles it,
+/// and assuming it is current is how this failed in the first place.
+fn worktree_freshness(
+    has_worktree: bool,
+    worktree_sha: Option<&str>,
+    page_sha: Option<&str>,
+) -> (bool, bool) {
+    let Some(page_sha) = page_sha else {
+        // Nothing scraped to compare against: leave the checkout alone rather
+        // than re-fetching on every open for a page that states no SHA.
+        return (has_worktree, false);
+    };
+    let stale = has_worktree && worktree_sha != Some(page_sha);
+    (has_worktree && !stale, stale)
+}
+
 async fn create_session(
     State(state): State<AppState>,
     Json(body): Json<CreateSessionBody>,
@@ -149,7 +188,11 @@ async fn create_session(
         }
     }
     let cfg = state.config.snapshot().await;
-    let mut worktree_ready = sess.worktree_path.is_some();
+    let (mut worktree_ready, stale_worktree) = worktree_freshness(
+        sess.worktree_path.is_some(),
+        sess.worktree_sha.as_deref(),
+        incoming_head_sha.as_deref(),
+    );
     let mut repo_local_path = sess.worktree_path.clone();
     let mut pending_action: Option<&'static str> = None;
     if !worktree_ready && cfg.mock.code_intel {
@@ -172,7 +215,10 @@ async fn create_session(
             )
             .await;
     } else if !worktree_ready {
-        // Kick off the real worktree orchestration in the background.
+        // Kick off the real worktree orchestration in the background. Also the
+        // path for a checkout that has fallen behind: `prepare_worktree` is
+        // idempotent, re-fetches, and resets a diverged worktree, so one call
+        // both builds and refreshes one.
         let (remote_url, pr_ref) = pr_inputs_from_pr_data(&sess.pr_data, sess.pr_number);
         state
             .session_status
@@ -186,9 +232,14 @@ async fn create_session(
                 session_id: sess.session_id.clone(),
                 remote_url,
                 pr_ref,
+                expected_sha: incoming_head_sha.clone(),
             },
         );
-        pending_action = Some("worktree_pending");
+        pending_action = Some(if stale_worktree {
+            "worktree_updating"
+        } else {
+            "worktree_pending"
+        });
     }
     Ok(Json(CreateSessionResponse {
         session_id: sess.session_id,
@@ -597,6 +648,147 @@ async fn provider_detected() -> Json<DetectedCredentials> {
     })
 }
 
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    /// A checkout that exists but is behind the PR head must not be treated as
+    /// ready: the session waits for the fetch instead of answering from code
+    /// the page no longer shows.
+    #[test]
+    fn a_worktree_behind_the_pr_head_is_not_ready() {
+        let (old, new) = (Some("aaa"), Some("bbb"));
+        // Never prepared: wait, and it is a first clone.
+        assert_eq!(worktree_freshness(false, None, new), (false, false));
+        // Prepared and on the commit the page shows: go.
+        assert_eq!(worktree_freshness(true, new, new), (true, false));
+        // Prepared, but on an older commit: wait, and call it an update.
+        assert_eq!(worktree_freshness(true, old, new), (false, true));
+        // Prepared at an unknown commit — an older daemon, or a prepare that
+        // could not report one. Refreshed rather than trusted.
+        assert_eq!(worktree_freshness(true, None, new), (false, true));
+        // The page states no SHA: nothing to compare, so nothing to redo.
+        assert_eq!(worktree_freshness(true, old, None), (true, false));
+    }
+
+    /// The failure this replaced: the same SHA arriving twice used to read as
+    /// "nothing changed" even when the checkout had never been moved to it.
+    #[test]
+    fn a_recorded_sha_does_not_make_an_unfetched_checkout_look_current() {
+        // Page and stored head agree — the old check's "no change" case — but
+        // the worktree is still on the previous commit.
+        assert_eq!(
+            worktree_freshness(true, Some("old"), Some("new")),
+            (false, true)
+        );
+    }
+
+    /// `save_tokens` creates or truncates whatever path this names, so a
+    /// caller holding the bearer token must not be able to choose it over
+    /// HTTP — it is `review.toml` only. (CodeRabbit, PR #6: path traversal.)
+    #[test]
+    fn provider_patch_cannot_move_the_chatgpt_token_file() {
+        let mut cfg = crate::config::Config::default();
+        let before = cfg.provider.chatgpt_token_file.clone();
+        let key = crate::storage::InstallKey::from_bytes([0u8; 32]);
+        apply_provider_patch(
+            &mut cfg,
+            &json!({"provider": {
+                "model": "gpt-5.6-sol",
+                "chatgpt_token_file": "/etc/cron.d/anything",
+            }}),
+            &key,
+        )
+        .unwrap();
+        assert_eq!(cfg.provider.model, "gpt-5.6-sol", "other fields still apply");
+        assert_eq!(cfg.provider.chatgpt_token_file, before);
+    }
+}
+
+/// Start a ChatGPT sign-in: generate PKCE, bind OpenAI's registered callback
+/// port, and hand back the authorize URL. The callback is awaited in the
+/// background so the request returns immediately — the UI polls
+/// `/v1/provider/chatgpt/status` to see it land.
+///
+/// Only ever reached when the user picks this provider kind: nothing falls
+/// back to a subscription (`04-review-daemon.md` § ChatGPT subscription
+/// provider).
+async fn chatgpt_login(State(state): State<AppState>) -> Result<Json<ChatGptLoginResponse>> {
+    use crate::provider::chatgpt_auth as auth;
+    let token_path =
+        crate::config::expand_path(&state.config.snapshot().await.provider.chatgpt_token_file);
+    let pkce = auth::Pkce::generate();
+    let state_param = uuid::Uuid::new_v4().simple().to_string();
+    let url = auth::authorize_url(&pkce.challenge, &state_param);
+    // Bind before returning the URL: if the port is taken, the user must hear
+    // it now, not after signing in to a page whose redirect goes nowhere.
+    let pending = auth::begin_callback(&state_param).await?;
+    let verifier = pkce.verifier;
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        match auth::finish_callback(pending, &client, &verifier).await {
+            Ok(tokens) => {
+                if let Err(e) = auth::save_tokens(&token_path, &tokens) {
+                    tracing::error!(error = %e, "chatgpt sign-in: could not store tokens");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "chatgpt sign-in did not complete"),
+        }
+        auth::clear_pending();
+    });
+    Ok(Json(ChatGptLoginResponse { authorize_url: url }))
+}
+
+async fn chatgpt_status(State(state): State<AppState>) -> Json<ChatGptStatus> {
+    use crate::provider::chatgpt_auth as auth;
+    let path =
+        crate::config::expand_path(&state.config.snapshot().await.provider.chatgpt_token_file);
+    let tokens = auth::load_tokens(&path).ok().flatten();
+    Json(ChatGptStatus {
+        signed_in: tokens.is_some(),
+        account_id: tokens.map(|t| t.account_id).filter(|a| !a.is_empty()),
+        pending: auth::sign_in_pending(),
+    })
+}
+
+/// What each provider kind reads from its config, so the UI can disable the
+/// fields a kind ignores. Declared by the providers themselves
+/// (`Provider::capabilities`), never guessed here from the kind string.
+async fn provider_capabilities() -> Json<serde_json::Value> {
+    let map: serde_json::Map<String, serde_json::Value> = crate::provider::PROVIDER_KINDS
+        .iter()
+        .filter_map(|k| {
+            let caps = crate::provider::capabilities_for_kind(k)?;
+            Some(((*k).to_string(), serde_json::to_value(caps).ok()?))
+        })
+        .collect();
+    Json(serde_json::Value::Object(map))
+}
+
+/// Caps that suit a given context window. Read-only: the config UI fills the
+/// form with these and the user saves them, so a model switch never rewrites
+/// `review.toml` behind their back.
+async fn limits_derive(
+    axum::extract::Query(q): axum::extract::Query<DeriveQuery>,
+) -> Result<Json<DerivedLimits>> {
+    if q.context_tokens == 0 {
+        return Err(Error::Validation("context_tokens must be positive".into()));
+    }
+    Ok(Json(crate::config::derive_limits(
+        q.context_tokens,
+        q.max_output_tokens,
+    )))
+}
+
+#[derive(Deserialize)]
+struct DeriveQuery {
+    context_tokens: u64,
+    /// The model's stated output ceiling, when it has one. Bounds the
+    /// suggested `max_tokens`.
+    #[serde(default)]
+    max_output_tokens: Option<u64>,
+}
+
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     // I1: report the real code-daemon state when the CLI wired in the
     // health hook; the mock fallback only exists for in-process tests.
@@ -751,6 +943,8 @@ const CONFIG_UI_HTML: &str = r#"<!doctype html>
                   font: inherit; }
   button { margin-top: 1rem; padding: 0.5rem 1rem; font: inherit; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+  /* A grid child's display beats the UA's [hidden] rule; say it explicitly. */
+  [hidden] { display: none !important; }
   #status { margin-top: 0.75rem; font-size: 0.9rem; }
   .ok { color: #064; } .err { color: #803; }
   small { color: #777; }
@@ -773,31 +967,37 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     <option value="mock">mock (no network)</option>
     <option value="anthropic">anthropic</option>
     <option value="openai_compat">openai_compat</option>
+    <option value="chatgpt">chatgpt (Plus/Pro subscription)</option>
   </select>
 
-  <label for="modelSelect">Model</label>
-  <div class="modelRow">
-    <select id="modelSelect" name="modelSelect">
-      <option value="__manual__">Other / type manually</option>
-    </select>
-    <button type="button" id="fetchModels">Fetch models</button>
+  <div id="modelField">
+    <label for="modelSelect">Model</label>
+    <div class="modelRow">
+      <select id="modelSelect" name="modelSelect">
+        <option value="__manual__">Other / type manually</option>
+      </select>
+      <button type="button" id="fetchModels">Fetch models</button>
+    </div>
+    <input id="model" name="model" type="text" autocomplete="off" placeholder="model id" />
+    <p id="modelStatus" class="modelStatus" aria-live="polite"></p>
   </div>
-  <input id="model" name="model" type="text" autocomplete="off" placeholder="model id" />
-  <p id="modelStatus" class="modelStatus" aria-live="polite"></p>
 
   <div class="row">
-    <div>
-      <label for="max_tokens">Max tokens</label>
+    <div id="maxTokensField">
+      <label for="max_tokens">Max tokens <small>(per answer)</small></label>
       <input id="max_tokens" name="max_tokens" type="number" min="1" />
+      <p id="maxTokensHint" class="hint" hidden></p>
     </div>
-    <div>
+    <div id="temperatureField">
       <label for="temperature">Temperature</label>
       <input id="temperature" name="temperature" type="number" step="0.05" min="0" max="2" />
     </div>
   </div>
 
-  <label for="endpoint">Endpoint <small>(blank = provider default)</small></label>
-  <input id="endpoint" name="endpoint" type="text" autocomplete="off" />
+  <div id="endpointField">
+    <label for="endpoint">Endpoint <small>(blank = provider default)</small></label>
+    <input id="endpoint" name="endpoint" type="text" autocomplete="off" />
+  </div>
 
   <div id="apiKeyField">
     <label for="api_key">API key <small>(stored encrypted)</small></label>
@@ -805,8 +1005,21 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
     <label class="inline"><input id="clear_key" type="checkbox" /> Clear the saved key (use the environment variable, or none)</label>
   </div>
   <p id="detectedHint" class="hint" hidden></p>
+  <p id="ignoredHint" class="hint" hidden></p>
+
+  <div id="chatgptField" hidden>
+    <p class="hint">Signs in with your own ChatGPT Plus/Pro subscription, the same way OpenAI's
+    Codex CLI does, and spends that subscription instead of API credit. Intended for personal
+    use — not for a shared or hosted daemon.</p>
+    <button type="button" id="chatgptLogin">Sign in with ChatGPT</button>
+    <p id="chatgptStatus" class="hint" aria-live="polite"></p>
+  </div>
 
   <h2>Context limits</h2>
+  <div class="modelRow">
+    <button type="button" id="deriveLimits" disabled>Size these to the model</button>
+    <span id="deriveHint" class="hint"></span>
+  </div>
   <p class="lede">Caps on what reaches the model, so a long conversation cannot outgrow its
   context window. The right values depend on that window: one <code>get_pr_diff</code> without
   <code>paths</code> measured 589,499 chars (~168k tokens) on a real PR — over half of a
@@ -926,9 +1139,126 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   modelSelect.addEventListener("change", function () {
     if (modelSelect.value !== "__manual__") {
       modelEl.value = modelSelect.value;
+      applyModelMaxOutput(true);
     }
   });
-  kindEl.addEventListener("change", updateDetectedHint);
+  // The subscription provider has no key field: it has a sign-in.
+  var chatgptField = document.getElementById("chatgptField");
+  var chatgptStatusEl = document.getElementById("chatgptStatus");
+  var ignoredHint = document.getElementById("ignoredHint");
+  var apiKeyField = document.getElementById("apiKeyField");
+  var chatgptPoll = null;
+  // What each provider kind reads, from `GET /v1/provider/capabilities`.
+  // Until it arrives every field stays editable: a slow fetch must not look
+  // like an unsupported field.
+  var capabilities = {};
+  // Context window per fetched model id — only for providers that report one
+  // (`ModelInfo.context_tokens`). Cleared whenever the list is refetched.
+  var modelContext = {};
+  // Max *output* tokens per model, where a provider states one. A different
+  // number from the context window: that covers input and output together, and
+  // sending it as max_tokens is rejected.
+  var modelMaxOutput = {};
+  function refreshChatgptStatus() {
+    return fetch("/v1/provider/chatgpt/status", { headers: headers }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (st) {
+      if (st.signed_in) {
+        chatgptStatusEl.textContent = "✓ signed in" + (st.account_id ? " (" + st.account_id + ")" : "");
+      } else if (st.pending) {
+        chatgptStatusEl.textContent = "waiting for the browser…";
+      } else {
+        chatgptStatusEl.textContent = "signed out";
+      }
+      // Stop polling once the sign-in settles either way.
+      if (!st.pending && chatgptPoll) { clearInterval(chatgptPoll); chatgptPoll = null; }
+      return st;
+    }).catch(function () { chatgptStatusEl.textContent = "status unavailable"; });
+  }
+  // Hide what this provider ignores. A disabled input still reads as a
+  // setting that exists and is merely unavailable; the field simply does not
+  // apply here, so it is not shown. The one-line summary says what is gone,
+  // so nothing vanishes without explanation.
+  var IGNORED_LABELS = {
+    temperature: "temperature",
+    max_tokens: "max tokens",
+    endpoint: "endpoint",
+    model: "model",
+  };
+  function applyCapabilities() {
+    var caps = capabilities[kindEl.value];
+    var ignored = [];
+    var fields = {
+      temperature: document.getElementById("temperatureField"),
+      max_tokens: document.getElementById("maxTokensField"),
+      endpoint: document.getElementById("endpointField"),
+      model: document.getElementById("modelField"),
+    };
+    Object.keys(fields).forEach(function (key) {
+      var supported = !caps || caps[key] !== false;
+      fields[key].hidden = !supported;
+      if (!supported) ignored.push(IGNORED_LABELS[key]);
+    });
+    var listSupported = !caps || caps.model_list !== false;
+    document.getElementById("fetchModels").hidden = !listSupported;
+    ignoredHint.hidden = ignored.length === 0;
+    ignoredHint.textContent = ignored.length
+      ? "Not used by this provider, so not shown: " + ignored.join(", ") + "."
+      : "";
+    // The key field is replaced by the sign-in, not merely hidden.
+    apiKeyField.hidden = !!(caps && caps.api_key === false);
+  }
+  function updateProviderFields() {
+    var isChatgpt = kindEl.value === "chatgpt";
+    chatgptField.hidden = !isChatgpt;
+    if (isChatgpt) refreshChatgptStatus();
+    applyCapabilities();
+    updateDetectedHint();
+  }
+  document.getElementById("chatgptLogin").addEventListener("click", function () {
+    chatgptStatusEl.textContent = "starting…";
+    fetch("/v1/provider/chatgpt/login", { method: "POST", headers: headers }).then(function (r) {
+      return r.json().then(function (b) { return { ok: r.ok, body: b }; });
+    }).then(function (res) {
+      if (!res.ok) {
+        // A port clash is the common one, and it has to be readable.
+        chatgptStatusEl.textContent = (res.body && res.body.message) || "sign-in could not start";
+        return;
+      }
+      window.open(res.body.authorize_url, "_blank", "noopener");
+      chatgptStatusEl.textContent = "waiting for the browser…";
+      if (chatgptPoll) clearInterval(chatgptPoll);
+      chatgptPoll = setInterval(refreshChatgptStatus, 2000);
+    }).catch(function () { chatgptStatusEl.textContent = "sign-in could not start"; });
+  });
+  // Switching provider clears what belonged to the old one. An endpoint left
+  // over from another provider is not a harmless default: a ChatGPT sign-in
+  // pointed at an OpenRouter endpoint asked the wrong server for its models
+  // and got a confident, wrong answer back.
+  kindEl.addEventListener("change", function () {
+    endpointEl.value = "";
+    modelEl.value = "";
+    // Context windows and output ceilings belong to the provider that
+    // reported them. Two providers can serve the same model id with different
+    // limits, so carrying these across would size caps from the wrong model.
+    modelContext = {};
+    modelMaxOutput = {};
+    modelSelect.innerHTML = '<option value="__manual__">Other / type manually</option>';
+    modelSelect.value = "__manual__";
+    modelStatus.textContent = "";
+    apiKeyEl.value = "";
+    clearKeyEl.checked = false;
+    updateProviderFields();
+  });
+
+  fetch("/v1/provider/capabilities", { headers: headers }).then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }).then(function (c) {
+    capabilities = c || {};
+    applyCapabilities();
+  }).catch(function () { /* everything stays editable */ });
 
   fetch("/v1/provider/detected", { headers: headers }).then(function (r) {
     if (!r.ok) throw new Error("HTTP " + r.status);
@@ -945,6 +1275,7 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
   }).then(function (cfg) {
     var p = cfg.provider || {};
     kindEl.value = p.kind || "mock";
+    updateProviderFields();
     modelEl.value = p.model || "";
     document.getElementById("max_tokens").value = p.max_tokens || 4096;
     document.getElementById("temperature").value = p.temperature != null ? p.temperature : 0;
@@ -968,6 +1299,10 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
 
   document.getElementById("fetchModels").addEventListener("click", function () {
     setModelStatus("Fetching models…", false);
+    // Dropped before the request, not after a successful one: a refresh that
+    // fails must not leave the previous provider's numbers in place.
+    modelContext = {};
+    modelMaxOutput = {};
     fetch("/v1/provider/models", {
       method: "POST", headers: headers,
       body: JSON.stringify({ provider: providerPatch() }),
@@ -987,20 +1322,127 @@ label.inline { display: flex; align-items: center; gap: 6px; font-weight: normal
       manual.value = "__manual__";
       manual.textContent = "Other / type manually";
       modelSelect.appendChild(manual);
+      modelContext = {};
+      modelMaxOutput = {};
       models.forEach(function (m) {
         var opt = document.createElement("option");
         opt.value = m.id;
-        opt.textContent = m.display_name ? (m.display_name + " (" + m.id + ")") : m.id;
+        var label = m.display_name ? (m.display_name + " (" + m.id + ")") : m.id;
+        if (m.context_tokens) {
+          label += " — " + m.context_tokens.toLocaleString() + " tokens";
+          modelContext[m.id] = m.context_tokens;
+        }
+        if (m.max_output_tokens) modelMaxOutput[m.id] = m.max_output_tokens;
+        opt.textContent = label;
         modelSelect.appendChild(opt);
       });
       // If the current text value matches a fetched model, preselect it.
       var match = models.some(function (m) { return m.id === modelEl.value; });
       modelSelect.value = match ? modelEl.value : "__manual__";
       setModelStatus("Loaded " + models.length + " model(s). Pick one or type your own.", false);
+      updateDeriveButton();
+      applyModelMaxOutput(false);
     }).catch(function (e) {
       setModelStatus("Could not fetch models: " + e.message + " You can still type the model id.", true);
     });
   });
+
+  // Fill the caps from the selected model's context window. It overwrites
+  // values the user may have tuned, so it asks first — and it only ever
+  // touches the form: nothing is stored until Save.
+  var deriveBtn = document.getElementById("deriveLimits");
+  var deriveHint = document.getElementById("deriveHint");
+  function selectedContext() {
+    return modelContext[modelEl.value] || 0;
+  }
+  function updateDeriveButton() {
+    var ctx = selectedContext();
+    deriveBtn.disabled = !ctx;
+    deriveHint.textContent = ctx
+      ? "from " + ctx.toLocaleString() + "-token context"
+      : "fetch models and pick one that reports a context window";
+  }
+  // The model's output ceiling, when it states one: the input takes it as a
+  // `max`, so the browser blocks saving more, and anything lower is fine —
+  // that is the reviewer's call, not the model's.
+  var maxTokensEl = document.getElementById("max_tokens");
+  var maxTokensHint = document.getElementById("maxTokensHint");
+  // What to fill in when a model is picked comes from the daemon
+  // (`config::suggested_max_tokens`), not from a constant here: it is the same
+  // policy question as the character caps, and one formula with tests beats
+  // two numbers that drift.
+  function suggestMaxTokens() {
+    var ctx = modelContext[modelEl.value] || 0;
+    var cap = modelMaxOutput[modelEl.value] || 0;
+    if (!ctx && !cap) return;
+    var q = "/v1/limits/derive?context_tokens=" + (ctx || 32768) +
+      (cap ? "&max_output_tokens=" + cap : "");
+    fetch(q, { headers: headers }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (d) {
+      maxTokensEl.value = d.max_tokens;
+      applyModelMaxOutput(false);
+    }).catch(function () { /* leave whatever is there */ });
+  }
+  function applyModelMaxOutput(prefill) {
+    var cap = modelMaxOutput[modelEl.value] || 0;
+    var ctx = modelContext[modelEl.value] || 0;
+    if (prefill) {
+      suggestMaxTokens();
+      return;
+    }
+    if (cap && Number(maxTokensEl.value) > cap) {
+      // Only clamp what the model cannot honour; a deliberate setting stands.
+      maxTokensEl.value = cap;
+    }
+    if (cap) maxTokensEl.setAttribute("max", cap);
+    else maxTokensEl.removeAttribute("max");
+    var parts = [];
+    if (cap) parts.push("model ceiling " + cap.toLocaleString());
+    if (ctx) {
+      var room = ctx - Number(maxTokensEl.value || 0);
+      parts.push("leaves ~" + Math.max(0, room).toLocaleString() + " tokens of input room");
+    }
+    maxTokensHint.hidden = parts.length === 0;
+    maxTokensHint.textContent = parts.length
+      ? parts.join(" · ") + ". This caps one answer; it is not reserved capacity."
+      : "";
+  }
+  maxTokensEl.addEventListener("input", function () { applyModelMaxOutput(false); });
+  modelEl.addEventListener("input", function () {
+    updateDeriveButton();
+    applyModelMaxOutput(false);
+  });
+  modelSelect.addEventListener("change", updateDeriveButton);
+  deriveBtn.addEventListener("click", function () {
+    var ctx = selectedContext();
+    if (!ctx) return;
+    if (!window.confirm(
+      "Replace the four character caps below — and the max tokens per answer — " +
+      "with values sized to a " + ctx.toLocaleString() + "-token context?\n\n" +
+      "This only fills the form — nothing is saved until you press Save."
+    )) return;
+    var capQ = modelMaxOutput[modelEl.value]
+      ? "&max_output_tokens=" + modelMaxOutput[modelEl.value]
+      : "";
+    fetch("/v1/limits/derive?context_tokens=" + ctx + capQ, { headers: headers }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (d) {
+      ["max_tool_result_chars", "max_turn_tool_chars", "replay_result_chars", "replay_turn_chars"]
+        .forEach(function (k) { document.getElementById(k).value = d[k]; });
+      // The answer's headroom comes out of the same window, so it is part of
+      // the same sizing rather than a separate decision.
+      maxTokensEl.value = d.max_tokens;
+      applyModelMaxOutput(false);
+      setStatus("Filled from a " + ctx.toLocaleString() + "-token context at " +
+        d.chars_per_token + " chars/token. Review, then Save.", true);
+    }).catch(function (e) {
+      setStatus("Could not size the caps: " + e.message, false);
+    });
+  });
+  updateDeriveButton();
 
   document.getElementById("cfgForm").addEventListener("submit", function (ev) {
     ev.preventDefault();

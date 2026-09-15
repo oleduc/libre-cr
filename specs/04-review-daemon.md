@@ -305,8 +305,12 @@ The presentation-tool category is only registered for turns that have an active 
 
 ## Internal Tools (Detailed)
 
-- **`get_pr_diff`** `{ paths?: string[] }` → `{ files: [{ path, status, hunks }] }`
+- **`get_pr_diff`** `{ paths?: string[] }` → `{ files: [{ path, status, hunks }] }`, or a manifest
   Computed by the router as a three-dot `git_diff` (`merge_base: true`) against `origin/<base>...HEAD` on the session's worktree; the scraped payload is only the fallback when no worktree or base branch is known. No `additions` / `deletions` counts. `paths` narrows it, and narrowing matters — see `10-grounding-and-context.md` § The context budget.
+
+  **Called without `paths` on a large PR, it answers with a file manifest instead of content**: `{ files_only: true, total_chars, files: [{ path, status, hunks, chars }], note }`. The threshold is 60,000 chars of serialized diff.
+
+  Measured on a real PR: 73 files, 643,463 chars, of which the model received the first 20,000 — three percent, cut mid-JSON, and mostly `uv.lock` and CI workflow churn because files arrive in path order. The model recovered by issuing scoped `git_diff` calls, but nothing had told it what it was choosing between. A manifest of that PR is a few thousand chars and answers exactly that question. This is truncate-and-tell one level up: when a result is too big, the useful answer is a smaller *complete* thing, not the first slice of a large one.
 
 - **`get_pr_comments`** `{}` → `{ comments: [{ thread_id, comment_id, author, body, anchor, file?, line?, start_line?, side?, resolved, resolved_by?, created_at? }], total, truncated }`
   Existing **review** comments — the threads on the diff. Top-level
@@ -365,24 +369,252 @@ trait Provider: Send + Sync {
     // Providers opt in; the default returns "not supported".
     async fn list_models(&self) -> Result<Vec<ModelInfo>>;
 }
+
+struct ModelInfo {
+    id: String,
+    display_name: Option<String>,
+    /// The model's context window, when this provider can state one.
+    context_tokens: Option<u64>,
+    /// The most it will emit in one answer, when stated. Bounds the suggested
+    /// `max_tokens`; see § Models.
+    max_output_tokens: Option<u64>,
+}
 ```
+
+**Config capabilities are the provider's to declare.** `Provider::capabilities`
+returns a `ProviderCapabilities` saying which of the provider block's fields it
+actually reads; the default supports everything, so a provider opts *out* of
+what it ignores and forgetting to declare leaves fields editable rather than
+silently greying them out. `GET /v1/provider/capabilities` returns the map for
+every kind, and the config UI **hides** the rest rather than greying it out: a
+disabled input still reads as a setting that exists and is merely unavailable,
+while these simply do not apply. One line names what is not shown, so nothing
+disappears without explanation.
+
+| Provider | Ignores |
+|---|---|
+| `chatgpt` | API key (it signs in), temperature, max tokens |
+| `mock` | API key, endpoint, temperature, max tokens, model |
+| `anthropic`, `openai_compat` | nothing |
+
+**Model capabilities are the provider's to report.** `list_models` is the only
+place that knows how a given API describes its models, and `ModelInfo` is the
+shape every provider answers in — so a new provider implements one method and
+everything downstream (the config UI's picker, cap sizing) works without
+knowing which provider it is talking to. `context_tokens` is `None` where an
+API does not state a window; it is never inferred from a model id.
+
+| Provider | `context_tokens` | `max_output_tokens` |
+|---|---|---|
+| `chatgpt` | `context_window` on the Codex model list | not stated |
+| `openai_compat` | `context_length` — OpenRouter states it, api.openai.com does not | `top_provider.max_completion_tokens` (OpenRouter) |
+| `anthropic` | not stated by its model list | not stated |
+| `mock` | none | none |
+
+**Three numbers, easily confused.** `provider.max_tokens` caps what the model
+may *emit in one answer* and is sent to the API as such. `context_tokens` is
+the window holding input and output together — sending it as `max_tokens` is
+rejected by most APIs. The `[limits]` character caps bound what *we* feed in.
+The config UI labels the field "Max tokens (per answer)" for that reason and
+takes a model's stated output ceiling as the input's `max`.
+
+Picking a model fills in a **derived suggestion**, not that ceiling —
+`config::suggested_max_tokens(context_tokens, max_output_tokens)`, returned by
+the same `/v1/limits/derive` route as the character caps, because the answer's
+headroom comes out of the same window:
+
+    8% of the context, floored at 8,192, ceilinged at 32,768,
+    never more than half the window, then bounded by the model's
+    stated output ceiling.
+
+| Context | Suggested |
+|---|---|
+| 16,000 | 8,000 (half the window) |
+| 64,000 | 8,192 (the floor) |
+| 128,000 | 10,240 |
+| 272,000 | 21,760 |
+| 1,048,576 | 32,768 |
+
+A fraction, because on Anthropic — and most OpenAI-compatible providers —
+`input + max_tokens` must fit the window, so reserving the full output ceiling
+starves the conversation of input room: 943,718 on a 1,048,576-token model
+leaves ~105k for everything else. Floored at 8,192, because reasoning models spend
+thinking tokens against this: 4,096 can go entirely on thinking, truncating the
+answer before it writes a visible word. Capped at half the window besides, so
+the floor cannot outgrow a small context. Ceilinged, because past a point more headroom buys
+nothing — an answer to a review question is not 200k tokens long. The model's
+own ceiling overrides all three: asking for more than it will emit is an error,
+not a preference.
+
+The hint states that ceiling and the input room the current value leaves.
+Anything lower is the reviewer's call, and a deliberate setting survives a
+reload.
 
 Provider kinds for v2 (`provider.kind` in config):
 
 - **`mock`** — no network; canned responses for development and tests.
 - **`anthropic`** — official Messages API. Streaming SSE. Tool-use loop. 120 s timeout. Implements `list_models` via `GET /v1/models`.
 - **`openai_compat`** — chat completions with tool calls. Works against api.openai.com, OpenRouter, Ollama, and any compatible endpoint.
+- **`chatgpt`** — a ChatGPT Plus/Pro subscription via OpenAI's Codex OAuth. Responses API, not chat completions. See § ChatGPT subscription provider.
 
 Both streaming parsers are symmetric on failure: an `event: error` frame becomes a `StreamEvent::Error` carrying the API's message (rather than a generic "ended without done"), and buffered tool-call state is flushed into a `ToolUse` on early EOF instead of being silently dropped. Streamed tool inputs are accumulated per block/call id and emitted as a single well-formed `ToolUse`, never per-fragment.
 
 Credential resolution (`anthropic` / `openai_compat`): the stored (decrypted) key always wins; when it is empty the daemon falls back to the standard ambient environment variable for the kind — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. This lets a user with the env var set never paste a key. Env vars only — the daemon never reads Claude Code / Claude CLI credentials, keychains, or `~/.claude/*` (Anthropic's terms restrict subscription OAuth tokens to Claude Code itself).
 
+The `chatgpt` kind is the deliberate exception to that last sentence, and the
+asymmetry is the provider's doing, not ours: OpenAI publishes the Codex OAuth
+client id and flow, and third-party clients (opencode and its auth plugins)
+use it. Anthropic publishes no equivalent. We follow what each vendor
+documents rather than a blanket rule.
+
 Configuration includes:
 - Model
 - Endpoint override
 - Max tokens
-- Temperature (defaults to 0 for determinism in tool routing; can be raised for free-form explanation verbs)
+- Temperature (defaults to **0.2**). Not zero: greedy decoding makes a repeated tool call an absorbing state — identical context produces the identical call, whose result is identical again, so nothing moves. A live question spent 27 identical greps that way before the round limit stopped it. The loop guards catch the repetition regardless (`10-grounding-and-context.md`), but the default should not invite it. Raise it further for free-form explanation verbs; keep it low for tool routing.
 - Optional system prompt prepended to every turn ("global instructions")
+
+## ChatGPT subscription provider
+
+> **Status: built.** Specified first, then implemented; the two deviations the
+> implementation forced are marked below.
+
+A reviewer with a ChatGPT Plus/Pro subscription can sign in and spend that
+subscription instead of API credit. This is the same flow OpenAI's own Codex
+CLI performs, with the same public client id.
+
+**Personal use, and gated as such.** Every client that implements this flow
+states it is for personal development use, not for hosted or multi-user
+services, and libre-cr is a tool other people install. So: the kind is never a
+default, it is selected explicitly in the config UI, and the UI says in one
+line that it spends the user's own subscription and is intended for personal
+use. No fallback ever selects it, and nothing about it is enabled by
+installing libre-cr.
+
+### Sign-in
+
+PKCE authorization-code flow, driven from the config UI:
+
+| Step | What happens |
+|---|---|
+| 1 | The UI posts `POST /v1/provider/chatgpt/login`. The daemon generates a PKCE verifier/challenge, binds a loopback listener on `127.0.0.1:1455`, and returns the authorize URL. |
+| 2 | The user opens it and signs in to ChatGPT. |
+| 3 | OpenAI redirects to `http://localhost:1455/auth/callback?code=…`. The daemon's listener takes the code, closes the listener, and exchanges it at `https://auth.openai.com/oauth/token`. |
+| 4 | Tokens are stored; the UI polls `GET /v1/provider/chatgpt/status` and shows the signed-in account. |
+
+Authorization parameters, as the Codex CLI sends them: `client_id=app_EMoamEEZ73f0CkXaXp7hrann`, `response_type=code`, `redirect_uri=http://localhost:1455/auth/callback`, `code_challenge_method=S256`, `id_token_add_organizations=true`, `codex_cli_simplified_flow=true`, and an `originator` naming this client.
+
+The fixed port is OpenAI's, not ours — the redirect URI is registered against
+that client id, so port 1455 must be free for the duration of the sign-in. A
+port already in use fails the login with that reason rather than silently
+falling back.
+
+### Tokens
+
+Stored as `~/.config/libre-cr/chatgpt-auth.json`, mode `0600`, holding
+`{ access, refresh, expires_ms, account_id }`. `account_id` is read from the
+id-token claims at exchange time.
+
+**Deviation:** the tokens are *not* encrypted with the install key, as first
+specified. The install key lives in the same directory on the same disk, so
+encrypting there buys obfuscation, not protection. `api_key_enc` is encrypted
+for a different reason — it sits inside `review.toml`, a file users open, paste
+and share — which does not apply to a dedicated `0600` file. This also matches
+what Codex CLI does with the same tokens.
+
+If the user already runs Codex CLI, `~/.codex/auth.json` holds the same shape.
+The daemon does **not** read it: an interactive sign-in makes the daemon's
+access explicit and revocable on its own terms, and a shared file makes two
+programs' refresh cycles race. (Reading it is the obvious convenience request;
+it is declined for those two reasons, not for a technical one.)
+
+Refresh happens when fewer than 30 seconds remain before expiry, and once
+more on a 401 before the turn is failed. A refresh that fails clears the
+stored tokens and surfaces "signed out" rather than retrying.
+
+### Requests
+
+The subscription backend speaks the **Responses API**, so this provider is a
+separate implementation, not a variant of `openai_compat`:
+
+- Base URL `https://chatgpt.com/backend-api/wham`, path `/responses`. Overridable by the endpoint field, since OpenAI has renamed this path before (it was `.../codex`).
+- Headers: `Authorization: Bearer <access>`, `ChatGPT-Account-Id: <account_id>`, and `originator: libre_cr` — this client's own name, not a borrowed one.
+- The token file is `provider.chatgpt_token_file` in config (default `~/.config/libre-cr/chatgpt-auth.json`), not a fixed path: two daemons — or a test run — must not share one sign-in by accident.
+- The system prompt goes in `instructions`, not as a message; message content parts are typed `input_text` / `output_text`, not `text`; `store: false` is mandatory.
+- Tool calls are `function_call` items addressed by `call_id`, and results are `function_call_output` items carrying the same id. The streaming item id is *not* the call id; conflating them silently breaks the tool loop.
+- Tool schemas are flat (`{ type: "function", name, description, parameters }`) rather than nested under `function`.
+- Streaming events are Responses-API events (`response.output_text.delta`, function-call argument deltas keyed by item id, a terminal `response.completed` carrying usage), mapped onto the same `StreamEvent` the rest of the daemon already consumes — so the agent loop, the caps, and the panel need no changes. Buffered calls are flushed on early EOF, the same guarantee the other two providers give.
+
+**Deviation:** `temperature` and the token cap are not sent. The reasoning
+models this subscription serves reject sampling parameters, so the config's
+values apply to every other kind and are ignored here rather than producing a
+400 on every turn.
+
+### Models
+
+`list_models` asks the backend: `GET {base}/models?client_version=<v>`, mapping
+each entry's `slug` to a model id in the order returned.
+
+**The list is gated on `client_version`.** Measured against a live account:
+`1.0.0` returned 8 models, `0.99.0` returned 1, `0.80.0` returned none. So a
+version that has fallen behind does not error — it quietly returns fewer
+models, or an empty list. An empty list is therefore reported as a stale
+client, not as a subscription without models, and the constant is raised as
+the backend moves on.
+
+The model field stays free text regardless: a list the daemon cannot fetch, or
+a model newer than the gate, must not stop a user from typing an id.
+
+A response with **no** `models` list is a different failure from an **empty**
+one, and they are reported differently: the first means the endpoint is not
+this backend at all, the second means this backend offered nothing. Selecting
+this kind with an endpoint left over from another provider sent the sign-in to
+OpenRouter, which answered `200 {data: […]}` — and a version that conflated the
+two blamed `client_version` for it.
+
+> **Corrected 2026-09-11.** This section first claimed the backend exposes no
+> model list, so `list_models` returned a hardcoded catalogue. Both halves were
+> wrong: the endpoint exists, and the catalogue — written from an assistant's
+> training data rather than from the API — offered ids (`gpt-5.2-codex`,
+> `gpt-5.1`) that do not exist on it. Found by the user: "I only see pretty old
+> models". The lesson is the one the grounding spec already states about
+> answers, applied to specs: state what was observed, not what was recalled.
+
+## Worktree freshness
+
+The checkout is prepared when a session is created, and **refreshed when it is
+not on the commit the page is showing**. The extension sends the head SHA it
+scraped on every session open, and the daemon compares it against
+`sessions.worktree_sha` — the commit the code daemon reported after preparing.
+When they differ, the session is not ready: `worktree_ready: false` with `pending_action: "worktree_updating"`, and
+the panel says the branch is being updated rather than answering from the old
+tree. `prepare_worktree` is idempotent — it re-fetches and resets a diverged
+worktree — so one call both builds and refreshes one, and the scraped SHA is
+passed as `expected_sha` so a session that has not moved costs a local
+`rev-parse` rather than a network round trip.
+
+Waiting is the point. `get_pr_diff`, `read_file` and `grep` all read that
+checkout, so answering from a tree known to be behind produces exactly the
+confident-but-wrong output the grounding rules exist to prevent
+(`10-grounding-and-context.md`). The wait is the same one a first visit
+already imposes; only the message differs, because "cloning a repo" and
+"catching up to new commits" set different expectations.
+
+**The comparison is state, not an event.** An earlier version asked whether the
+scraped SHA differed from the last one *stored*, which loses the signal
+permanently the moment anything records the new SHA without completing the
+fetch. That happened in the field: a page load on an older daemon stored the new
+SHA and did nothing with it, so every later load compared that SHA to itself and
+served a four-day-old checkout while the panel's own banner said the PR had
+changed. A checkout whose SHA is unknown — prepared before this was recorded, or
+by a prepare that could not report one — counts as stale and is refreshed once.
+
+**Freshness is judged against what the page shows**, not against the remote:
+the SHA comes from the scrape, so a tab left open for an hour is checked
+against the SHA it was loaded with. Deliberate — it keeps the daemon consistent
+with the diff the reviewer is looking at, and costs no fetch per question. A PR
+that moves while the tab sits idle is caught on the next page load, which is
+also when the "PR diff changed" banner appears.
 
 ## Conversation Storage (SQLite)
 
@@ -462,11 +694,11 @@ data_dir = "~/.local/share/libre-cr-review"
 db = "~/.local/share/libre-cr-review/state.db"
 
 [provider]
-kind = "anthropic"             # "mock" | "anthropic" | "openai_compat"; default is "mock"
-api_key_enc = "<encrypted>"    # AES-GCM; empty → fall back to ANTHROPIC_API_KEY / OPENAI_API_KEY env var. Unused by "mock".
+kind = "anthropic"             # "mock" | "anthropic" | "openai_compat" | "chatgpt"; default is "mock"
+api_key_enc = "<encrypted>"    # AES-GCM; empty → fall back to ANTHROPIC_API_KEY / OPENAI_API_KEY env var. Unused by "mock" and "chatgpt".
 model = "claude-sonnet-4-7-20260101"   # placeholder
-max_tokens = 4096
-temperature = 0.0
+max_tokens = 8192              # per answer, not the context window; a reasoning model can spend 4k on thinking alone
+temperature = 0.2              # not 0: greedy decoding makes tool-call loops an absorbing state
 endpoint = ""                  # optional override
 
 [code_daemon]
@@ -511,6 +743,14 @@ on a real PR — over half of a 262k-token context in a single tool result.
 The extension does **not** edit daemon config — not the provider, not the API key, and not the `[limits]` caps. Two reasons: (a) the work happens in the daemon, so its settings belong there; (b) the extension's options page is a leaky abstraction across multiple PR-review surfaces, and splitting config across two editors is the same leak twice.
 
 The daemon serves a minimal config UI at `http://127.0.0.1:<port>/config-ui` — a self-contained static HTML page, no templating. It reads its bearer token from the `?token=` query parameter (the wrapper's `libre-cr config` and the extension popup both open the URL with the token already appended) and attaches it as `Authorization: Bearer` on the JSON calls it makes. The token only ever appears in the URL the user already trusts to launch the daemon; it is never baked into stored markup.
+
+Selecting the `chatgpt` kind swaps the API-key field for a **Sign in with ChatGPT** button and a status line (signed in as, or signed out), driven by the two endpoints in § ChatGPT subscription provider. The same one-line notice about personal use lives next to it.
+
+Changing the provider kind clears the fields that belonged to the previous one — endpoint, model, the fetched model list, the key field. A leftover endpoint is not a harmless default: it silently points the new provider at the old provider's server.
+
+The limits fieldset offers **Size these to the model**: `GET /v1/limits/derive?context_tokens=N` returns the four character caps that suit that window, and the button fills them into the form. It is enabled only when the selected model reported a window, it asks for confirmation first because it overwrites values the user may have tuned, and — like every other control on the page — it writes nothing. The caps reach `review.toml` when the form is saved, never before.
+
+The division itself (`config::derive_limits`) is provider-agnostic: what a model's window *is* comes from the provider, how a window is divided into caps is one policy shared by all of them. Characters per token is stated explicitly (3.5, source code being denser than prose) rather than buried, and the fractions are the ones the hand-tuned defaults already imply at a 262k window — so pressing it on an existing setup reproduces roughly what is configured rather than silently re-tuning it. Floors keep a small window from producing caps the agent loop cannot make progress under.
 
 That page is where both editable config blocks live: the provider settings **and** the `[limits]` context caps, in one form with one Save. It reads both from `GET /v1/config` and sends a `provider` and a `limits` patch to `POST /v1/config`. The `limits` patch is partial — unmentioned caps are left alone — and every value is range-checked, so a zero cap answers 400 with the reason rather than storing a config that hands the model empty tool results.
 
