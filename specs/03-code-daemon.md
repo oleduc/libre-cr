@@ -401,6 +401,20 @@ These are targets, not guarantees. Repos differ. The daemon logs every tool call
 - The AST cache and language servers (phase C) use per-language locks; a slow Python analysis doesn't block a Rust query.
 - Worktree creation for the same `(repo_id, ref)` is single-flighted: concurrent `prepare_worktree` calls share a single in-flight fetch. The single-flight map holds `Weak` references and is pruned on every acquire, so it stays bounded by the number of *in-flight* prepares rather than growing one entry per ref ever requested.
 
+## Argument Handling
+
+**An empty optional argument means the argument was not given.** `""` — and any
+whitespace-only string — is read as absent for every optional string parameter
+(`file`, `ref`, `glob`, `from_ref`, `name`, …), because a caller that means "no
+filter" writes the key with an empty value about as often as it omits the key,
+and the two must not mean different things.
+
+They did: `git_log { "file": "" }` filtered every commit against a path that
+matches nothing and answered with an empty history — which an agent read as
+"this checkout has no commits" while trying to work out why its worktree looked
+stale. One helper does this for every tool, so the next optional argument
+inherits it rather than repeating the trap.
+
 ## Error Model
 
 Tool errors return `{ ok: false, error: "<machine-readable code>", message: "<human text>", details?: {...} }`.
