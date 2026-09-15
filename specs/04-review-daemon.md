@@ -580,6 +580,32 @@ two blamed `client_version` for it.
 > models". The lesson is the one the grounding spec already states about
 > answers, applied to specs: state what was observed, not what was recalled.
 
+## Worktree freshness
+
+The checkout is prepared when a session is created, and **refreshed when the
+PR head moves**. The extension sends the head SHA it scraped from the page on
+every session open; when it differs from the stored one, the session is not
+ready: `worktree_ready: false` with `pending_action: "worktree_updating"`, and
+the panel says the branch is being updated rather than answering from the old
+tree. `prepare_worktree` is idempotent — it re-fetches and resets a diverged
+worktree — so one call both builds and refreshes one, and the scraped SHA is
+passed as `expected_sha` so a session that has not moved costs a local
+`rev-parse` rather than a network round trip.
+
+Waiting is the point. `get_pr_diff`, `read_file` and `grep` all read that
+checkout, so answering from a tree known to be behind produces exactly the
+confident-but-wrong output the grounding rules exist to prevent
+(`10-grounding-and-context.md`). The wait is the same one a first visit
+already imposes; only the message differs, because "cloning a repo" and
+"catching up to new commits" set different expectations.
+
+**Freshness is judged against what the page shows**, not against the remote:
+the SHA comes from the scrape, so a tab left open for an hour is checked
+against the SHA it was loaded with. Deliberate — it keeps the daemon consistent
+with the diff the reviewer is looking at, and costs no fetch per question. A PR
+that moves while the tab sits idle is caught on the next page load, which is
+also when the "PR diff changed" banner appears.
+
 ## Conversation Storage (SQLite)
 
 Four tables plus an FTS index: `sessions`, `turns`, `tool_traces`, and

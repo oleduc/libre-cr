@@ -123,6 +123,20 @@ struct CreateSessionBody {
     pr_data: serde_json::Value,
 }
 
+/// Is the session's checkout usable, and if not, is that because it has fallen
+/// behind rather than never existed?
+///
+/// A worktree that exists but sits on an older commit is **not** ready: the
+/// point of the checkout is that `get_pr_diff`, `read_file` and `grep` read the
+/// code the page is showing. Answering from a tree known to have moved is the
+/// failure the grounding rules exist to prevent, so the session waits for the
+/// fetch — and says which wait it is, because "cloning a repo" and "catching up
+/// to new commits" set different expectations.
+fn worktree_freshness(has_worktree: bool, head_moved: bool) -> (bool, bool) {
+    let stale = has_worktree && head_moved;
+    (has_worktree && !stale, stale)
+}
+
 async fn create_session(
     State(state): State<AppState>,
     Json(body): Json<CreateSessionBody>,
@@ -153,7 +167,8 @@ async fn create_session(
         }
     }
     let cfg = state.config.snapshot().await;
-    let mut worktree_ready = sess.worktree_path.is_some();
+    let (mut worktree_ready, stale_worktree) =
+        worktree_freshness(sess.worktree_path.is_some(), pr_diff_changed);
     let mut repo_local_path = sess.worktree_path.clone();
     let mut pending_action: Option<&'static str> = None;
     if !worktree_ready && cfg.mock.code_intel {
@@ -176,7 +191,10 @@ async fn create_session(
             )
             .await;
     } else if !worktree_ready {
-        // Kick off the real worktree orchestration in the background.
+        // Kick off the real worktree orchestration in the background. Also the
+        // path for a checkout that has fallen behind: `prepare_worktree` is
+        // idempotent, re-fetches, and resets a diverged worktree, so one call
+        // both builds and refreshes one.
         let (remote_url, pr_ref) = pr_inputs_from_pr_data(&sess.pr_data, sess.pr_number);
         state
             .session_status
@@ -190,9 +208,14 @@ async fn create_session(
                 session_id: sess.session_id.clone(),
                 remote_url,
                 pr_ref,
+                expected_sha: incoming_head_sha.clone(),
             },
         );
-        pending_action = Some("worktree_pending");
+        pending_action = Some(if stale_worktree {
+            "worktree_updating"
+        } else {
+            "worktree_pending"
+        });
     }
     Ok(Json(CreateSessionResponse {
         session_id: sess.session_id,
@@ -604,6 +627,22 @@ async fn provider_detected() -> Json<DetectedCredentials> {
 #[cfg(test)]
 mod patch_tests {
     use super::*;
+
+    /// A checkout that exists but is behind the PR head must not be treated as
+    /// ready: the session waits for the fetch instead of answering from code
+    /// the page no longer shows.
+    #[test]
+    fn a_worktree_behind_the_pr_head_is_not_ready() {
+        // Never prepared: wait, and it is a first clone.
+        assert_eq!(worktree_freshness(false, false), (false, false));
+        // Prepared and current: go.
+        assert_eq!(worktree_freshness(true, false), (true, false));
+        // Prepared but the head moved: wait, and say it is an update.
+        assert_eq!(worktree_freshness(true, true), (false, true));
+        // No checkout and a moved head — still a first clone, not an update:
+        // there is nothing to bring up to date.
+        assert_eq!(worktree_freshness(false, true), (false, false));
+    }
 
     /// `save_tokens` creates or truncates whatever path this names, so a
     /// caller holding the bearer token must not be able to choose it over

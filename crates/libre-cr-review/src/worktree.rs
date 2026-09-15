@@ -118,6 +118,11 @@ pub struct PrepareInputs {
     pub session_id: String,
     pub remote_url: Option<String>,
     pub pr_ref: String,
+    /// The PR head the page is showing, when known. Passed through to
+    /// `prepare_worktree`, which skips the fetch when the checkout is already
+    /// on it — so re-preparing a session that has not moved costs a local
+    /// `rev-parse`, not a network round trip.
+    pub expected_sha: Option<String>,
 }
 
 /// Synchronous worker for one session. Performs the discover → prepare flow
@@ -195,10 +200,13 @@ pub async fn prepare_session(
         .map(|s| s.to_string());
 
     // prepare_worktree
-    let prep_input = serde_json::json!({
+    let mut prep_input = serde_json::json!({
         "repo_id": repo_id,
         "ref": input.pr_ref,
     });
+    if let Some(sha) = &input.expected_sha {
+        prep_input["expected_sha"] = serde_json::json!(sha);
+    }
     let prep = match code
         .call_with_timeout(
             "prepare_worktree",
@@ -345,6 +353,7 @@ mod tests {
                 session_id: sess.session_id.clone(),
                 remote_url: Some("https://github.com/a/b".into()),
                 pr_ref: "pull/1/head".into(),
+                expected_sha: None,
             },
         )
         .await
@@ -377,6 +386,7 @@ mod tests {
                 session_id: sess.session_id,
                 remote_url: Some("https://github.com/a/b".into()),
                 pr_ref: "pull/2/head".into(),
+                expected_sha: None,
             },
         )
         .await
@@ -405,6 +415,7 @@ mod tests {
                 session_id: sess.session_id,
                 remote_url: Some("https://github.com/a/b".into()),
                 pr_ref: "pull/3/head".into(),
+                expected_sha: None,
             },
         )
         .await
@@ -432,6 +443,7 @@ mod tests {
                 session_id: sess.session_id,
                 remote_url: None,
                 pr_ref: "pull/3/head".into(),
+                expected_sha: None,
             },
         )
         .await
