@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 use crate::error::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 const M0001: &str = r#"
 CREATE TABLE IF NOT EXISTS _schema_version (
@@ -71,6 +71,17 @@ const M0003: &str = r#"
 ALTER TABLE sessions ADD COLUMN head_sha TEXT;
 "#;
 
+/// The commit the session's checkout is actually on.
+///
+/// Freshness used to be inferred from a *change* — this scrape's SHA differing
+/// from the last one stored — which is lost the moment anything records the new
+/// SHA without completing the fetch: a crash, a failed prepare, an upgrade
+/// mid-review. Storing what the worktree is on makes the check a comparison of
+/// state, which cannot go stale behind our back.
+const M0004: &str = r#"
+ALTER TABLE sessions ADD COLUMN worktree_sha TEXT;
+"#;
+
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     // Read current version (0 if none)
@@ -106,6 +117,12 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
         let tx = conn.transaction()?;
         tx.execute_batch(M0003)?;
         tx.execute("INSERT INTO _schema_version (version) VALUES (?1)", [3])?;
+        tx.commit()?;
+    }
+    if current < 4 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(M0004)?;
+        tx.execute("INSERT INTO _schema_version (version) VALUES (?1)", [4])?;
         tx.commit()?;
     }
     Ok(())

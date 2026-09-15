@@ -582,10 +582,11 @@ two blamed `client_version` for it.
 
 ## Worktree freshness
 
-The checkout is prepared when a session is created, and **refreshed when the
-PR head moves**. The extension sends the head SHA it scraped from the page on
-every session open; when it differs from the stored one, the session is not
-ready: `worktree_ready: false` with `pending_action: "worktree_updating"`, and
+The checkout is prepared when a session is created, and **refreshed when it is
+not on the commit the page is showing**. The extension sends the head SHA it
+scraped on every session open, and the daemon compares it against
+`sessions.worktree_sha` — the commit the code daemon reported after preparing.
+When they differ, the session is not ready: `worktree_ready: false` with `pending_action: "worktree_updating"`, and
 the panel says the branch is being updated rather than answering from the old
 tree. `prepare_worktree` is idempotent — it re-fetches and resets a diverged
 worktree — so one call both builds and refreshes one, and the scraped SHA is
@@ -598,6 +599,15 @@ confident-but-wrong output the grounding rules exist to prevent
 (`10-grounding-and-context.md`). The wait is the same one a first visit
 already imposes; only the message differs, because "cloning a repo" and
 "catching up to new commits" set different expectations.
+
+**The comparison is state, not an event.** An earlier version asked whether the
+scraped SHA differed from the last one *stored*, which loses the signal
+permanently the moment anything records the new SHA without completing the
+fetch. That happened in the field: a page load on an older daemon stored the new
+SHA and did nothing with it, so every later load compared that SHA to itself and
+served a four-day-old checkout while the panel's own banner said the PR had
+changed. A checkout whose SHA is unknown — prepared before this was recorded, or
+by a prepare that could not report one — counts as stale and is refreshed once.
 
 **Freshness is judged against what the page shows**, not against the remote:
 the SHA comes from the scrape, so a tab left open for an hour is checked

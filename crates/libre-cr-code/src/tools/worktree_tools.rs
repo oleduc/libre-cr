@@ -55,9 +55,14 @@ impl Tool for PrepareWorktree {
             let path = wt
                 .prepare(&repo_id, &r, name.as_deref(), expected_sha.as_deref())
                 .await?;
+            // The commit the worktree is actually on, so a caller can tell
+            // whether its checkout matches the revision it is reviewing
+            // without re-deriving it from what it asked for.
+            let head = crate::repo::worktree::head_sha(&path).await.ok();
             Ok(json!({
                 "ok": true,
                 "worktree_path": path.to_string_lossy(),
+                "head_sha": head,
             }))
         })
     }

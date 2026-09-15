@@ -240,6 +240,16 @@ pub async fn prepare_session(
     let _ = store
         .set_worktree(&input.session_id, repo_id.as_deref(), Some(&path))
         .await;
+    // What the checkout is actually on, as the code daemon reports it — not
+    // what we asked for. The next session open compares the scraped SHA against
+    // this, so a prepare that quietly landed on something else is visible
+    // rather than assumed away.
+    let _ = store
+        .set_worktree_sha(
+            &input.session_id,
+            prep.get("head_sha").and_then(|v| v.as_str()),
+        )
+        .await;
     let status = SessionStatus::ready(path, repo_id);
     board.set(&input.session_id, status.clone()).await;
     Ok(status)

@@ -132,8 +132,29 @@ struct CreateSessionBody {
 /// failure the grounding rules exist to prevent, so the session waits for the
 /// fetch — and says which wait it is, because "cloning a repo" and "catching up
 /// to new commits" set different expectations.
-fn worktree_freshness(has_worktree: bool, head_moved: bool) -> (bool, bool) {
-    let stale = has_worktree && head_moved;
+///
+/// The comparison is `worktree_sha` (what the checkout is on) against the
+/// scraped SHA — **not** the scraped SHA against the last one stored. An
+/// event-based check is lost the moment anything records the new SHA without
+/// completing the fetch: found in the field, where a page load on an older
+/// binary stored the new SHA, did nothing with it, and left every later load
+/// comparing that SHA to itself and concluding the four-day-old checkout was
+/// current.
+///
+/// A checkout whose SHA is unknown (prepared before this was recorded, or a
+/// prepare that could not report one) counts as stale: one refresh settles it,
+/// and assuming it is current is how this failed in the first place.
+fn worktree_freshness(
+    has_worktree: bool,
+    worktree_sha: Option<&str>,
+    page_sha: Option<&str>,
+) -> (bool, bool) {
+    let Some(page_sha) = page_sha else {
+        // Nothing scraped to compare against: leave the checkout alone rather
+        // than re-fetching on every open for a page that states no SHA.
+        return (has_worktree, false);
+    };
+    let stale = has_worktree && worktree_sha != Some(page_sha);
     (has_worktree && !stale, stale)
 }
 
@@ -167,8 +188,11 @@ async fn create_session(
         }
     }
     let cfg = state.config.snapshot().await;
-    let (mut worktree_ready, stale_worktree) =
-        worktree_freshness(sess.worktree_path.is_some(), pr_diff_changed);
+    let (mut worktree_ready, stale_worktree) = worktree_freshness(
+        sess.worktree_path.is_some(),
+        sess.worktree_sha.as_deref(),
+        incoming_head_sha.as_deref(),
+    );
     let mut repo_local_path = sess.worktree_path.clone();
     let mut pending_action: Option<&'static str> = None;
     if !worktree_ready && cfg.mock.code_intel {
@@ -633,15 +657,30 @@ mod patch_tests {
     /// the page no longer shows.
     #[test]
     fn a_worktree_behind_the_pr_head_is_not_ready() {
+        let (old, new) = (Some("aaa"), Some("bbb"));
         // Never prepared: wait, and it is a first clone.
-        assert_eq!(worktree_freshness(false, false), (false, false));
-        // Prepared and current: go.
-        assert_eq!(worktree_freshness(true, false), (true, false));
-        // Prepared but the head moved: wait, and say it is an update.
-        assert_eq!(worktree_freshness(true, true), (false, true));
-        // No checkout and a moved head — still a first clone, not an update:
-        // there is nothing to bring up to date.
-        assert_eq!(worktree_freshness(false, true), (false, false));
+        assert_eq!(worktree_freshness(false, None, new), (false, false));
+        // Prepared and on the commit the page shows: go.
+        assert_eq!(worktree_freshness(true, new, new), (true, false));
+        // Prepared, but on an older commit: wait, and call it an update.
+        assert_eq!(worktree_freshness(true, old, new), (false, true));
+        // Prepared at an unknown commit — an older daemon, or a prepare that
+        // could not report one. Refreshed rather than trusted.
+        assert_eq!(worktree_freshness(true, None, new), (false, true));
+        // The page states no SHA: nothing to compare, so nothing to redo.
+        assert_eq!(worktree_freshness(true, old, None), (true, false));
+    }
+
+    /// The failure this replaced: the same SHA arriving twice used to read as
+    /// "nothing changed" even when the checkout had never been moved to it.
+    #[test]
+    fn a_recorded_sha_does_not_make_an_unfetched_checkout_look_current() {
+        // Page and stored head agree — the old check's "no change" case — but
+        // the worktree is still on the previous commit.
+        assert_eq!(
+            worktree_freshness(true, Some("old"), Some("new")),
+            (false, true)
+        );
     }
 
     /// `save_tokens` creates or truncates whatever path this names, so a
