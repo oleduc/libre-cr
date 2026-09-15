@@ -35,12 +35,18 @@ describe("restoring an answer's effects", () => {
 
   it("reports a partial replay rather than claiming the whole answer is shown", async () => {
     const onShow = vi.fn().mockResolvedValue({ applied: 1, total: 2 });
-    render(<ConversationTurn turn={answered()} onShowPresentation={onShow} />);
+    const { rerender } = render(
+      <ConversationTurn turn={answered()} onShowPresentation={onShow} />,
+    );
 
     fireEvent.click(screen.getByTestId("show-presentation"));
+    await waitFor(() => expect(onShow).toHaveBeenCalledWith("t1", answered().presentation));
+    // The parent marks this answer as the one on the diff once the replay lands.
+    rerender(
+      <ConversationTurn turn={answered()} onShowPresentation={onShow} presentationActive={true} />,
+    );
 
-    await waitFor(() => expect(screen.getByText("1 of 2 shown")).toBeTruthy());
-    expect(onShow).toHaveBeenCalledWith("t1", answered().presentation);
+    expect(screen.getByText("1 of 2 shown")).toBeTruthy();
     cleanup();
   });
 
@@ -65,6 +71,30 @@ describe("restoring an answer's effects", () => {
     const rows = document.querySelectorAll('[data-libre-cr-tag="highlight"]');
     expect(rows.length).toBe(1);
     expect(rows[0].querySelector("td")?.getAttribute("data-line-number")).toBe("2");
+  });
+
+  it("names the one answer whose effects are on the diff", async () => {
+    const onShow = vi.fn().mockResolvedValue({ applied: 2, total: 2 });
+    const { rerender } = render(
+      <ConversationTurn turn={answered()} onShowPresentation={onShow} presentationActive={false} />,
+    );
+    expect(screen.getByTestId("show-presentation").textContent).toContain("Show on diff");
+
+    fireEvent.click(screen.getByTestId("show-presentation"));
+    await waitFor(() => expect(onShow).toHaveBeenCalled());
+    rerender(
+      <ConversationTurn turn={answered()} onShowPresentation={onShow} presentationActive={true} />,
+    );
+    expect(screen.getByTestId("show-presentation").textContent).toContain("On the diff");
+    expect(screen.getByText("on the diff")).toBeTruthy();
+
+    // Another answer takes the page: this one must stop claiming it.
+    rerender(
+      <ConversationTurn turn={answered()} onShowPresentation={onShow} presentationActive={false} />,
+    );
+    expect(screen.getByText("replaced by another answer")).toBeTruthy();
+    expect(screen.queryByText("on the diff")).toBeNull();
+    cleanup();
   });
 
   it("carries the recorded calls back from the session", () => {

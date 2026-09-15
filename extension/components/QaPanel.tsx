@@ -68,11 +68,19 @@ export function QaPanel(props: QaPanelProps) {
   const [showFirstPair, setShowFirstPair] = useState(false);
   const [presentationsMuted, setPresentationsMuted] = useState(false);
   const presentationRef = useRef(createPresentationManager());
+  // Which answer owns what is on the diff right now. The page shows one
+  // answer's effects at a time — the mechanics already guarantee it, since
+  // every path clears before it paints — but the reviewer scrolling a diff
+  // cannot see which answer they are looking at unless the panel says so.
+  const [effectsFrom, setEffectsFrom] = useState<string | null>(null);
   // Putting a past answer's effects back on the diff. Recorded calls, replayed
   // — the manager's own `steps` only ever hold the current turn.
   const onShowPresentation = useCallback(
-    (_turnId: string, steps: { tool: string; input: Record<string, unknown> }[]) =>
-      presentationRef.current.replaySteps(steps),
+    async (turnId: string, steps: { tool: string; input: Record<string, unknown> }[]) => {
+      const result = await presentationRef.current.replaySteps(steps);
+      setEffectsFrom(result.applied > 0 ? turnId : null);
+      return result;
+    },
     [],
   );
 
@@ -200,7 +208,8 @@ export function QaPanel(props: QaPanelProps) {
       if (asking) return;
       setAsking(true);
       setError(null);
-      // Auto-clear previous effects and start a fresh replay list.
+      // Auto-clear previous effects and start a fresh replay list: the new
+      // answer is about to own the diff.
       presentationRef.current.clearAll();
       presentationRef.current.resetSteps();
       setStepIndex(-1);
@@ -208,6 +217,8 @@ export function QaPanel(props: QaPanelProps) {
       setTourArmed(false);
       autoOpenedRef.current = false;
       const turnId = newTurnId();
+      // The answer about to be written owns the diff from here.
+      setEffectsFrom(turnId);
       // Turns the reviewer left expanded carry their tool results into this
       // ask: their daemon ids go on the wire and the daemon replays those
       // turns at full fidelity.
@@ -503,6 +514,7 @@ export function QaPanel(props: QaPanelProps) {
             onEditNote={onEditNote}
             onDeleteNote={onDeleteNote}
             onShowPresentation={onShowPresentation}
+            presentationActive={effectsFrom === t.id}
           />
         ))}
       </div>
@@ -580,7 +592,10 @@ export function QaPanel(props: QaPanelProps) {
           {labelsVisible ? "Captions on" : "Captions off"}
         </button>
         <button
-          onClick={() => presentationRef.current.clearAll()}
+          onClick={() => {
+            presentationRef.current.clearAll();
+            setEffectsFrom(null);
+          }}
           title="Remove highlights and annotations from the diff (the conversation stays)"
         >
           Clear all effects

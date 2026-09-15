@@ -66,6 +66,10 @@ export interface ConversationTurnProps {
     severity: NoteSeverity,
   ) => Promise<void> | void;
   onDeleteNote?: (noteId: string) => Promise<void> | void;
+  /** Whether the diff is currently showing *this* answer's effects. Only one
+   *  answer's are ever on the page: every path clears before it paints, and
+   *  this is how the panel says which one won. */
+  presentationActive?: boolean;
   /** Put this answer's effects back on the diff. Resolves with how many of its
    *  calls actually landed, since the diff may have moved on. */
   onShowPresentation?: (
@@ -99,6 +103,7 @@ export function ConversationTurn({
   onEditNote,
   onDeleteNote,
   onShowPresentation,
+  presentationActive,
 }: ConversationTurnProps) {
   const [expanded, setExpanded] = useState(false);
   // Controlled: derived from the prop every render so the parent's
@@ -269,9 +274,18 @@ export function ConversationTurn({
                 .finally(() => setShowing(false));
             }}
           >
-            {showing ? "Showing…" : `Show on diff (${turn.presentation.length})`}
+            {showing
+              ? "Showing…"
+              : presentationActive
+                ? `On the diff (${turn.presentation.length})`
+                : `Show on diff (${turn.presentation.length})`}
           </button>
-          {shown ? <span className="hint">{shown}</span> : null}
+          {shown && presentationActive ? <span className="hint">{shown}</span> : null}
+          {!presentationActive && shown ? (
+            // Another answer took the diff since: what this one reported is no
+            // longer what is on screen, so it is not left standing as if it were.
+            <span className="hint">replaced by another answer</span>
+          ) : null}
         </div>
       ) : null}
       {turn.thinking && turn.thinking.length > 0 ? (

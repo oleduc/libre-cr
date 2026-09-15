@@ -153,9 +153,15 @@ the extension keeps: `GET /v1/sessions/:id` carries each turn's successful
 presentation calls, and the panel shows a control on an expanded answer —
 "Show on diff (N)" — that applies them.
 
-- **One answer's effects at a time.** Replaying clears whatever is currently
-  shown first. Two answers' highlights on one diff cannot be told apart, and
-  the tags carry no answer identity a reader could use.
+- **One answer's effects at a time, and the panel says which.** Every path
+  clears before it paints — a new question, a replay, the tour — so the page
+  only ever carries one answer's marks. Two answers' highlights on one diff
+  cannot be told apart, and the tags carry no answer identity a reader could
+  use. The rule is worth nothing if it is invisible, though: a reviewer
+  scrolling a marked-up diff has no way to tell whose marks they are. The
+  answer that owns the page reads **"On the diff (N)"**; an answer that owned
+  it and was displaced says its result was "replaced by another answer" rather
+  than leaving a stale claim standing.
 - **Only successful calls replay.** A call that failed painted nothing, so
   replaying it would only fail again.
 - **Replay is best-effort, and says so.** The diff may have moved since: a file
