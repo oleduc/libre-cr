@@ -85,6 +85,16 @@ export const PANEL_STYLES = `
      resized to its limit never clips its footer controls. */
   max-height: calc(100vh - 96px);
 }
+.libre-cr-presentation-restore {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.libre-cr-presentation-restore .hint {
+  color: #59636e;
+  font-size: 11px;
+}
 .libre-cr-notice {
   margin-top: 6px;
   padding: 6px 8px;

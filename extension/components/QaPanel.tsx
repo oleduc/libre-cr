@@ -68,6 +68,13 @@ export function QaPanel(props: QaPanelProps) {
   const [showFirstPair, setShowFirstPair] = useState(false);
   const [presentationsMuted, setPresentationsMuted] = useState(false);
   const presentationRef = useRef(createPresentationManager());
+  // Putting a past answer's effects back on the diff. Recorded calls, replayed
+  // — the manager's own `steps` only ever hold the current turn.
+  const onShowPresentation = useCallback(
+    (_turnId: string, steps: { tool: string; input: Record<string, unknown> }[]) =>
+      presentationRef.current.replaySteps(steps),
+    [],
+  );
 
   useEffect(() => {
     const m = presentationRef.current;
@@ -251,9 +258,20 @@ export function QaPanel(props: QaPanelProps) {
       session.on("done", (f) => {
         // Remember the daemon's id so a later ask can name this turn in
         // context_turn_ids while it stays expanded.
+        //
+        // The effects this answer placed are attached here too, from the calls
+        // the manager just recorded — so "Show on diff" works immediately,
+        // rather than only after a reload fetches them back from the session.
+        const placed = presentationRef.current.steps.map((step) => ({ ...step }));
         setTurns((all) =>
           all.map((t) =>
-            t.kind === "qa" && t.id === turnId ? { ...t, daemonTurnId: f.turn_id } : t,
+            t.kind === "qa" && t.id === turnId
+              ? {
+                  ...t,
+                  daemonTurnId: f.turn_id,
+                  ...(placed.length ? { presentation: placed } : {}),
+                }
+              : t,
           ),
         );
       });
@@ -484,6 +502,7 @@ export function QaPanel(props: QaPanelProps) {
             onSaveAsNote={onSaveAsNote}
             onEditNote={onEditNote}
             onDeleteNote={onDeleteNote}
+            onShowPresentation={onShowPresentation}
           />
         ))}
       </div>

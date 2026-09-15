@@ -265,9 +265,29 @@ async fn get_session(
             .unwrap_or(true);
     let head_sha = sess.head_sha.clone();
     let last_seen_at = sess.last_active_at;
+    // Each turn carries the presentation calls it made, so the panel can put
+    // an answer's highlights back on the diff after the page (or the panel)
+    // was closed. The calls are already stored as tool traces; this is a
+    // projection of them, not a second copy.
+    let mut steps = state
+        .store
+        .presentation_steps_by_turn(&id, crate::tools::presentation::PRESENTATION_TOOL_NAMES)
+        .await?;
     let turns = turns
         .into_iter()
-        .map(|t| serde_json::to_value(t).map_err(Error::from))
+        .map(|t| {
+            let turn_id = t.turn_id.clone();
+            let mut value = serde_json::to_value(t).map_err(Error::from)?;
+            if let Some(calls) = steps.remove(&turn_id) {
+                value["presentation"] = serde_json::Value::Array(
+                    calls
+                        .into_iter()
+                        .map(|(tool, input)| serde_json::json!({ "tool": tool, "input": input }))
+                        .collect(),
+                );
+            }
+            Ok(value)
+        })
         .collect::<Result<Vec<_>>>()?;
     let status = match status {
         Some(s) => Some(serde_json::to_value(s)?),

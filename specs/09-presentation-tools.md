@@ -136,9 +136,35 @@ User does one of:
   • Asks next question     → previous turn's effects auto-cleared if setting is on (default)
   • Clicks "Clear" on panel → all this session's effects cleared
   • Toggles "Keep effects"  → effects persist until manually cleared
-  • Closes the panel        → effects cleared
+  • Closes the panel        → effects cleared (restorable: see below)
   • Navigates away          → effects cleared automatically on content script unload
 ```
+
+### Restoring an answer's effects
+
+Closing the panel clears the page, and that stays: highlights left behind by a
+closed panel are litter on a page the reviewer did not ask us to mark. What was
+missing is the way back — reopening left an answer that talks about lines
+nothing points at any more.
+
+Every presentation call a turn made is already stored, as an ordinary tool
+trace. Restoring is therefore a **replay of what was recorded**, not a cache
+the extension keeps: `GET /v1/sessions/:id` carries each turn's successful
+presentation calls, and the panel shows a control on an expanded answer —
+"Show on diff (N)" — that applies them.
+
+- **One answer's effects at a time.** Replaying clears whatever is currently
+  shown first. Two answers' highlights on one diff cannot be told apart, and
+  the tags carry no answer identity a reader could use.
+- **Only successful calls replay.** A call that failed painted nothing, so
+  replaying it would only fail again.
+- **Replay is best-effort, and says so.** The diff may have moved since: a file
+  collapsed, a line gone after a push, a range clamped. Steps that no longer
+  land are skipped and the control reports what did (`3 of 5 shown`), because
+  silently showing less than the answer describes is the failure this whole
+  document exists to avoid.
+- The control appears only on an expanded answer that recorded at least one
+  call, so a conversation of plain answers gains no new furniture.
 
 Clearing on a new question is **unconditional** today: there is no "keep effects" setting, and `autoClearOnNewQuestion` is declared but never read. Notes place no DOM effects at all — the only three tags are `highlight`, `annotation` and `flash`, all agent-placed — so there is nothing reviewer-curated to preserve. Both the setting and note-effect carve-out are intended, not built.
 

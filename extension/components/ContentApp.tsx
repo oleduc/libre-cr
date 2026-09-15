@@ -40,6 +40,7 @@ export function turnsFromSession(rows: SessionTurnRow[]): Turn[] {
       kind: "qa",
       id: r.turn_id,
       daemonTurnId: r.turn_id,
+      presentation: r.presentation,
       question: r.question ?? "",
       sel,
       answer: r.answer ?? "",

@@ -559,6 +559,71 @@ async fn provider_capabilities_are_declared_per_kind() {
     }
 }
 
+/// An answer's presentation calls come back with the session, so the panel can
+/// put its highlights back on the diff after the page was closed
+/// (`specs/09-presentation-tools.md` § Restoring an answer's effects).
+#[tokio::test]
+async fn session_turns_carry_the_presentation_calls_they_made() {
+    let h = common::start_server_default().await;
+    let c = reqwest::Client::new();
+    let sid = {
+        let body: serde_json::Value = c
+            .post(url(h.addr, "/v1/sessions"))
+            .bearer_auth(&h.token)
+            .json(&json!({"pr_url": "https://github.com/o/r/pull/11", "pr_data": {}}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        body["session_id"].as_str().unwrap().to_string()
+    };
+
+    // A turn that highlighted two ranges, scrolled, and ran a tool that is not
+    // a presentation call at all.
+    h.store
+        .insert_turn_auto_ordinal(
+            &common::question_turn(&sid, "t_p1", "why?"),
+            &[
+                common::trace("t_p1", 1, "get_pr_diff", json!({"paths": []}), true),
+                common::trace(
+                    "t_p1",
+                    2,
+                    "highlight_lines",
+                    json!({"file": "a.rs", "start_line": 1, "end_line": 2}),
+                    true,
+                ),
+                // A call that failed paints nothing now either.
+                common::trace("t_p1", 3, "highlight_lines", json!({"file": "gone.rs"}), false),
+                common::trace("t_p1", 4, "scroll_to", json!({"file": "a.rs", "line": 1}), true),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let detail: serde_json::Value = c
+        .get(url(h.addr, &format!("/v1/sessions/{sid}")))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let turn = detail["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["turn_id"] == "t_p1")
+        .unwrap();
+    let calls = turn["presentation"].as_array().unwrap();
+    assert_eq!(calls.len(), 2, "only the successful presentation calls");
+    assert_eq!(calls[0]["tool"], "highlight_lines");
+    assert_eq!(calls[0]["input"]["file"], "a.rs");
+    assert_eq!(calls[1]["tool"], "scroll_to", "in the order they were applied");
+}
+
 /// Caps can be sized from a model's context window — computed by the daemon,
 /// filled into the form, and saved only when the user saves
 /// (`specs/04-review-daemon.md` § Configuration UI).

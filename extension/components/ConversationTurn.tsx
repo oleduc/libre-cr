@@ -13,6 +13,12 @@ export interface ToolTraceLite {
 
 export type NoteSeverity = "info" | "suggestion" | "warning" | "critical";
 
+/** One recorded presentation call: what the answer put on the diff. */
+export interface PresentationStep {
+  tool: string;
+  input: Record<string, unknown>;
+}
+
 export type Turn =
   | {
       kind: "qa";
@@ -27,6 +33,10 @@ export type Turn =
       error?: string;
       pending?: boolean;
       collapsed?: boolean;
+      /** The presentation calls this answer made, in order. Restored with the
+       *  session, so its highlights can go back on the diff after the panel or
+       *  the page was closed. */
+      presentation?: PresentationStep[];
     }
   | {
       kind: "note";
@@ -56,6 +66,12 @@ export interface ConversationTurnProps {
     severity: NoteSeverity,
   ) => Promise<void> | void;
   onDeleteNote?: (noteId: string) => Promise<void> | void;
+  /** Put this answer's effects back on the diff. Resolves with how many of its
+   *  calls actually landed, since the diff may have moved on. */
+  onShowPresentation?: (
+    turnId: string,
+    steps: PresentationStep[],
+  ) => Promise<{ applied: number; total: number }> | void;
 }
 
 const SEVERITY_GLYPHS: Record<NoteSeverity, string> = {
@@ -82,11 +98,14 @@ export function ConversationTurn({
   onSaveAsNote,
   onEditNote,
   onDeleteNote,
+  onShowPresentation,
 }: ConversationTurnProps) {
   const [expanded, setExpanded] = useState(false);
   // Controlled: derived from the prop every render so the parent's
   // collapse-older-turns logic actually takes effect (round-2 E2).
   const collapsedQa = turn.kind === "qa" && turn.collapsed === true;
+  const [showing, setShowing] = useState(false);
+  const [shown, setShown] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveText, setSaveText] = useState("");
   const [saveSeverity, setSaveSeverity] = useState<NoteSeverity>("info");
@@ -226,6 +245,33 @@ export function ConversationTurn({
           {largestTruncation ? ` (largest: ${largestTruncation.toLocaleString()} chars)` : ""} —
           this answer may be missing detail. Raise the caps in the daemon's config page
           (the popup's "Configure daemon" link), under Context limits.
+        </div>
+      ) : null}
+      {turn.kind === "qa" && turn.presentation && turn.presentation.length > 0 ? (
+        <div className="libre-cr-presentation-restore">
+          <button
+            type="button"
+            data-testid="show-presentation"
+            disabled={showing}
+            onClick={() => {
+              const steps = turn.presentation ?? [];
+              const result = onShowPresentation?.(turn.id, steps);
+              if (!result) return;
+              setShowing(true);
+              void Promise.resolve(result)
+                .then(({ applied, total }) => {
+                  // Saying "shown" when a third of it landed is the failure
+                  // the presentation rules exist to prevent, so partial
+                  // replays report what the diff could still take.
+                  setShown(applied === total ? "on the diff" : `${applied} of ${total} shown`);
+                })
+                .catch(() => setShown("could not be shown"))
+                .finally(() => setShowing(false));
+            }}
+          >
+            {showing ? "Showing…" : `Show on diff (${turn.presentation.length})`}
+          </button>
+          {shown ? <span className="hint">{shown}</span> : null}
         </div>
       ) : null}
       {turn.thinking && turn.thinking.length > 0 ? (

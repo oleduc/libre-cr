@@ -218,6 +218,49 @@ impl Store {
         Ok(out)
     }
 
+    /// Every successful presentation call this session made, by turn, in the
+    /// order they were applied.
+    ///
+    /// One query rather than a `list_traces` per turn: this runs on every
+    /// session open. Failed calls are left out — a call that painted nothing
+    /// then will paint nothing now.
+    pub async fn presentation_steps_by_turn(
+        &self,
+        session_id: &str,
+        tools: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<(String, serde_json::Value)>>> {
+        let conn = self.inner.lock().await;
+        let placeholders = tools.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT tr.turn_id, tr.tool_name, tr.input_json
+             FROM tool_traces tr JOIN turns t ON t.turn_id = tr.turn_id
+             WHERE t.session_id = ?1 AND tr.ok != 0 AND tr.tool_name IN ({placeholders})
+             ORDER BY t.ordinal ASC, tr.ordinal ASC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![&session_id];
+        for t in tools {
+            args.push(t);
+        }
+        let rows = stmt.query_map(args.as_slice(), |r| {
+            let turn_id: String = r.get(0)?;
+            let tool: String = r.get(1)?;
+            let input_s: String = r.get(2)?;
+            Ok((
+                turn_id,
+                tool,
+                serde_json::from_str(&input_s).unwrap_or(serde_json::Value::Null),
+            ))
+        })?;
+        let mut out: std::collections::HashMap<String, Vec<(String, serde_json::Value)>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (turn_id, tool, input) = row?;
+            out.entry(turn_id).or_default().push((tool, input));
+        }
+        Ok(out)
+    }
+
     pub async fn list_traces(&self, turn_id: &str) -> Result<Vec<ToolTrace>> {
         let conn = self.inner.lock().await;
         let mut stmt = conn.prepare(

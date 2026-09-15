@@ -12,7 +12,7 @@ use libre_cr_review::config::{Config, ScriptedEvent};
 use libre_cr_review::pairing::PairingStore;
 use libre_cr_review::provider::{MockProvider, Provider, StreamEvent};
 use libre_cr_review::server::{serve, AppStateBuilder, ConfigStore, ListenInfo};
-use libre_cr_review::storage::{InstallKey, Store};
+use libre_cr_review::storage::{InstallKey, Store, ToolTrace, Turn, TurnKind, TurnStatus};
 use libre_cr_review::tools::code_daemon::{CodeDaemonClient, MockCodeDaemonClient};
 
 pub struct Harness {
@@ -21,6 +21,46 @@ pub struct Harness {
     pub pairing: PairingStore,
     pub store: Store,
     pub _task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+/// A minimal question turn, for tests that seed history directly.
+pub fn question_turn(session_id: &str, turn_id: &str, question: &str) -> Turn {
+    Turn {
+        turn_id: turn_id.into(),
+        session_id: session_id.into(),
+        ordinal: 0,
+        kind: TurnKind::Question,
+        status: TurnStatus::Ok,
+        verb: None,
+        question: Some(question.into()),
+        selection: None,
+        answer: Some("because".into()),
+        user_content: None,
+        severity: None,
+        usage_in: 0,
+        usage_out: 0,
+        created_at: chrono::Utc::now().timestamp_millis(),
+        source_turn_id: None,
+    }
+}
+
+pub fn trace(
+    turn_id: &str,
+    ordinal: i64,
+    tool: &str,
+    input: serde_json::Value,
+    ok: bool,
+) -> ToolTrace {
+    ToolTrace {
+        trace_id: format!("tr_{turn_id}_{ordinal}"),
+        turn_id: turn_id.into(),
+        ordinal,
+        tool_name: tool.into(),
+        input_json: input,
+        output_json: serde_json::json!({}),
+        duration_ms: 1,
+        ok,
+    }
 }
 
 pub async fn start_server_with_script(script: Vec<ScriptedEvent>) -> Harness {
