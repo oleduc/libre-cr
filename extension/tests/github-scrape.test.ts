@@ -57,3 +57,22 @@ describe("scrapePr", () => {
     meta.remove();
   });
 });
+
+describe("review-comment warnings", () => {
+  beforeEach(() => {
+    document.body.innerHTML = FIXTURE;
+  });
+
+  it("does not warn about comments on a page that cannot carry them", () => {
+    // The Conversation tab's payload has no `pullRequestsChangesRoute`, so
+    // there is nothing to read and nothing wrong. Warning there is a false
+    // alarm the reviewer cannot tell from a real one.
+    history.replaceState(null, "", "/octocat/repo/pull/42");
+    expect(scrapePr().warnings.some((w) => w.includes("review comments"))).toBe(false);
+  });
+
+  it("warns on the diff view, where the payload should have carried them", () => {
+    history.replaceState(null, "", "/octocat/repo/pull/42/files");
+    expect(scrapePr().warnings.some((w) => w.includes("review comments"))).toBe(true);
+  });
+});

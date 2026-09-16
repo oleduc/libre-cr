@@ -243,7 +243,11 @@ control whose click does nothing. Selecting a file-level comment would need
 
 Separately from selection, the scraper captures **all** review comments into
 `pr_data.comments` for `get_pr_comments` (`04-review-daemon.md` § Internal
-Tools). That path reads the embedded page payload
+Tools). Only the **diff view** carries them: the Conversation tab's embedded
+payload has no `pullRequestsChangesRoute` at all, so a scrape there states
+nothing about comments — which is not a failure, and is not warned about. The
+daemon carries the stored comments forward when a scrape omits them, so opening
+the Conversation tab does not delete what the Files tab captured. That path reads the embedded page payload
 (`script[type="application/json"][data-target="react-app.embeddedData"]`),
 joining `markers.threads` with each `diffSummaries[].markersMap` for the
 anchor, because the DOM holds neither the virtualized threads nor the resolved
