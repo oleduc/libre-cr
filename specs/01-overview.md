@@ -114,6 +114,7 @@ These are explicit non-goals for this iteration:
 | `08-distribution.md` | Install, supervision, updates |
 | `09-presentation-tools.md` | LLM-dispatched browser actions (highlight, annotate, scroll, link) |
 | `10-grounding-and-context.md` | What evidence reaches the model, how much, and what is reported when it is cut |
+| `11-review-coaching.md` | Optional slice: goals, per-review read-backs, and why it is not a plugin (specified, not built) |
 | `CHANGELOG-SPECS.md` | What each spec claim said before the September 2026 reconciliation, and why it changed |
 | `CHANGELOG-TESTING.md` | Findings and fixes from the certification and manual-testing rounds |
 | `plan.md` | Phased implementation |
