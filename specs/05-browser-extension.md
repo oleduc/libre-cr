@@ -254,6 +254,15 @@ anchor, because the DOM holds neither the virtualized threads nor the resolved
 ones. Selection uses the DOM instead: it needs the element the reviewer is
 hovering, which is by definition mounted.
 
+**The selection layer's listeners attach once.** They live on `document`, and
+the effect that installs them depends on whether the layer is enabled — never
+on the handler's identity. A caller that builds its handler inline (the normal
+way to write one) would otherwise re-attach on every render, and re-attaching
+re-reads the URL hash and re-emits the selection, which re-renders: a loop that
+allocated until Chrome killed the tab. The handler is read through a ref, and
+an unchanged selection is not treated as a state change, so the cycle has no
+way to start.
+
 The selection is sticky — it persists until cleared or replaced. The Q&A panel header shows the current selection ("`src/auth.ts:42-48` selected · [×]"). Asking a question without a selection is allowed (it's just "ask about this PR").
 
 ## Q&A Panel

@@ -1,6 +1,6 @@
 // Observes diff line-number clicks and maintains a current `Selection`.
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { Selection } from "../utils/selection";
 import {
   CODE_CELL_SEL,
@@ -21,7 +21,17 @@ export interface SelectionLayerProps {
 }
 
 export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps) {
+  // The handler is read through a ref so this effect depends on `enabled`
+  // alone. Depending on the callback's identity made a caller that builds it
+  // inline — the normal way to write one — re-attach these document listeners
+  // on every render; `watchGithubLineSelection` re-reads the URL hash when it
+  // attaches, which emitted the same selection again, which re-rendered. That
+  // loop ran until Chrome killed the tab.
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+
   useEffect(() => {
+    const onSelect = (sel: Selection | null) => onSelectRef.current(sel);
     if (!enabled) return;
     const click = (ev: MouseEvent) => {
       const target = ev.target as Node | null;
@@ -106,6 +116,6 @@ export function SelectionLayer({ onSelect, enabled = true }: SelectionLayerProps
       unwatch();
       uninstall();
     };
-  }, [enabled, onSelect]);
+  }, [enabled]);
   return null;
 }

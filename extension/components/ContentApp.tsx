@@ -1,6 +1,6 @@
 // Top-level React component mounted into the Shadow DOM.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { DaemonClient, DaemonError } from "../utils/daemon/client";
 import { daemonFetch } from "../utils/daemon/proxy";
@@ -13,6 +13,15 @@ import { SelectionLayer } from "./SelectionLayer";
 import type { SessionTurnRow } from "../utils/daemon/frames";
 import { selectionLabel } from "../utils/selection";
 import type { Turn } from "./ConversationTurn";
+
+/** Whether two selections name the same thing, so re-emitting one is not a
+ *  state change. Compared by value: the watcher builds a fresh object each
+ *  time it reads the URL hash. */
+function sameSelection(a: Selection | null, b: Selection | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 /** Rebuild the panel conversation from the daemon's stored turns. */
 export function turnsFromSession(rows: SessionTurnRow[]): Turn[] {
@@ -183,10 +192,14 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
   // "Ask about this" on a review comment is an explicit request to ask, so it
   // opens the panel. A line/range selection does not: it rides GitHub's own
   // line-number gesture, and hijacking that to pop a panel open would be rude.
-  const onSelect = (sel: Selection | null) => {
-    setSelection(sel);
+  const onSelect = useCallback((sel: Selection | null) => {
+    // Bail out when the same place is selected again. React skips the render
+    // for identical state, which is the third guard against a selection loop:
+    // the watcher re-emits on re-attach, and an unchanged selection must not
+    // become a render.
+    setSelection((prev) => (sameSelection(prev, sel) ? prev : sel));
     if (sel?.kind === "comment") setOpen(true);
-  };
+  }, []);
 
   if (!open) {
     return (
