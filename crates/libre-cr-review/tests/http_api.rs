@@ -595,8 +595,20 @@ async fn session_turns_carry_the_presentation_calls_they_made() {
                     true,
                 ),
                 // A call that failed paints nothing now either.
-                common::trace("t_p1", 3, "highlight_lines", json!({"file": "gone.rs"}), false),
-                common::trace("t_p1", 4, "scroll_to", json!({"file": "a.rs", "line": 1}), true),
+                common::trace(
+                    "t_p1",
+                    3,
+                    "highlight_lines",
+                    json!({"file": "gone.rs"}),
+                    false,
+                ),
+                common::trace(
+                    "t_p1",
+                    4,
+                    "scroll_to",
+                    json!({"file": "a.rs", "line": 1}),
+                    true,
+                ),
             ],
         )
         .await
@@ -621,7 +633,10 @@ async fn session_turns_carry_the_presentation_calls_they_made() {
     assert_eq!(calls.len(), 2, "only the successful presentation calls");
     assert_eq!(calls[0]["tool"], "highlight_lines");
     assert_eq!(calls[0]["input"]["file"], "a.rs");
-    assert_eq!(calls[1]["tool"], "scroll_to", "in the order they were applied");
+    assert_eq!(
+        calls[1]["tool"], "scroll_to",
+        "in the order they were applied"
+    );
 }
 
 /// Caps can be sized from a model's context window — computed by the daemon,

@@ -866,7 +866,13 @@ mod tests {
             .upsert_session(url, serde_json::json!({"comments": {"comments": []}}))
             .await
             .unwrap();
-        assert_eq!(sess.pr_data["comments"]["comments"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            sess.pr_data["comments"]["comments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[tokio::test]

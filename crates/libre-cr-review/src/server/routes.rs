@@ -720,7 +720,10 @@ mod patch_tests {
             &key,
         )
         .unwrap();
-        assert_eq!(cfg.provider.model, "gpt-5.6-sol", "other fields still apply");
+        assert_eq!(
+            cfg.provider.model, "gpt-5.6-sol",
+            "other fields still apply"
+        );
         assert_eq!(cfg.provider.chatgpt_token_file, before);
     }
 }
