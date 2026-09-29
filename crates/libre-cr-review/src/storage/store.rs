@@ -88,9 +88,16 @@ impl Store {
             )
             .optional()?;
         let session_id = if let Some(id) = existing {
+            // Carry forward what this scrape could not see. Review comments
+            // live only in the diff view's payload, so a page load on the
+            // Conversation tab arrives without them — and replacing the row
+            // wholesale would delete comments the Files tab had captured,
+            // leaving `get_pr_comments` reporting "unavailable" for a PR it had
+            // already read. Absent is not empty, here as everywhere else.
+            let merged = carry_forward(&conn, &id, pr_data)?;
             conn.execute(
                 "UPDATE sessions SET pr_data=?1, last_active_at=?2 WHERE session_id=?3",
-                params![pr_data_str, now, id],
+                params![serde_json::to_string(&merged)?, now, id],
             )?;
             id
         } else {
@@ -214,6 +221,49 @@ impl Store {
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Every successful presentation call this session made, by turn, in the
+    /// order they were applied.
+    ///
+    /// One query rather than a `list_traces` per turn: this runs on every
+    /// session open. Failed calls are left out — a call that painted nothing
+    /// then will paint nothing now.
+    pub async fn presentation_steps_by_turn(
+        &self,
+        session_id: &str,
+        tools: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<(String, serde_json::Value)>>> {
+        let conn = self.inner.lock().await;
+        let placeholders = tools.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT tr.turn_id, tr.tool_name, tr.input_json
+             FROM tool_traces tr JOIN turns t ON t.turn_id = tr.turn_id
+             WHERE t.session_id = ?1 AND tr.ok != 0 AND tr.tool_name IN ({placeholders})
+             ORDER BY t.ordinal ASC, tr.ordinal ASC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![&session_id];
+        for t in tools {
+            args.push(t);
+        }
+        let rows = stmt.query_map(args.as_slice(), |r| {
+            let turn_id: String = r.get(0)?;
+            let tool: String = r.get(1)?;
+            let input_s: String = r.get(2)?;
+            Ok((
+                turn_id,
+                tool,
+                serde_json::from_str(&input_s).unwrap_or(serde_json::Value::Null),
+            ))
+        })?;
+        let mut out: std::collections::HashMap<String, Vec<(String, serde_json::Value)>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (turn_id, tool, input) = row?;
+            out.entry(turn_id).or_default().push((tool, input));
         }
         Ok(out)
     }
@@ -528,6 +578,43 @@ fn insert_turn_tx(conn: &Connection, t: &Turn, ordinal: i64, traces: &[ToolTrace
     Ok(())
 }
 
+/// Keys a fresh scrape may legitimately lack, kept from the stored `pr_data`
+/// when the incoming one omits them.
+///
+/// Only keys whose absence means "this page could not see it" belong here. A
+/// key the scrape sets to an empty value still wins: that is an observation.
+const CARRIED_FORWARD_PR_DATA_KEYS: &[&str] = &["comments"];
+
+fn carry_forward(
+    conn: &Connection,
+    session_id: &str,
+    incoming: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT pr_data FROM sessions WHERE session_id=?1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(stored) = stored.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    else {
+        return Ok(incoming);
+    };
+    let mut incoming = incoming;
+    let (Some(map), Some(old)) = (incoming.as_object_mut(), stored.as_object()) else {
+        return Ok(incoming);
+    };
+    for key in CARRIED_FORWARD_PR_DATA_KEYS {
+        if !map.contains_key(*key) {
+            if let Some(value) = old.get(*key) {
+                map.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
+    Ok(incoming)
+}
+
 fn load_session(conn: &Connection, id: &str) -> Result<Session> {
     let row = conn
         .query_row(
@@ -744,6 +831,48 @@ mod tests {
         }
         // Snippet should contain the highlighted term.
         assert!(hits.iter().all(|(_, _, _, snip, _)| snip.contains('[')));
+    }
+
+    /// A page that cannot see the comments must not delete them. The
+    /// Conversation tab's payload carries no review threads, and its scrape
+    /// used to replace the row wholesale — so opening it after the Files tab
+    /// left `get_pr_comments` reporting "unavailable" for a PR already read.
+    #[tokio::test]
+    async fn a_scrape_without_comments_keeps_the_ones_already_captured() {
+        let store = Store::open_in_memory().unwrap();
+        let url = "https://github.com/a/b/pull/5";
+        // The diff view captured them.
+        store
+            .upsert_session(
+                url,
+                serde_json::json!({"title": "t", "comments": {"comments": [{"body": "x"}]}}),
+            )
+            .await
+            .unwrap();
+
+        // The Conversation tab says nothing about comments.
+        let sess = store
+            .upsert_session(url, serde_json::json!({"title": "t2"}))
+            .await
+            .unwrap();
+        assert_eq!(sess.pr_data["title"], "t2", "what it did see still wins");
+        assert_eq!(
+            sess.pr_data["comments"]["comments"][0]["body"], "x",
+            "what it could not see is kept"
+        );
+
+        // An empty list is an observation, not an absence: it replaces.
+        let sess = store
+            .upsert_session(url, serde_json::json!({"comments": {"comments": []}}))
+            .await
+            .unwrap();
+        assert_eq!(
+            sess.pr_data["comments"]["comments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[tokio::test]

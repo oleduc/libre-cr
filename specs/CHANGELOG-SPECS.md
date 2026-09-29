@@ -422,6 +422,27 @@ detail presented as observed fact — committed in a spec, by the assistant
 writing it. The correction is recorded here rather than quietly patched
 because the pattern matters more than the fix.
 
+## 2026-09-16 — Review coaching, specified as a slice (not built)
+
+A feature spec written before any code, and the second entry here that can fail
+by drift rather than by laundering. `11-review-coaching.md` is new; `01`'s spec
+map gains a row.
+
+The design argument it settles, recorded because the alternative was the
+default assumption:
+
+| Considered | Chosen | Why |
+|---|---|---|
+| Ship it as an addon on a new plugin API | An in-tree crate, off by default | A plugin API designed against one imagined consumer fits nothing. The slice may only use interfaces we would publish, so the seam is whatever it actually needed |
+| Middleware over chats and tool calls | Read the daemon's published surfaces | A module that can sit inside a turn can break every answer, and the breakage looks like a model failure |
+| Score reviews, chart progression | Goals and per-review read-backs, no number | A model grading review quality with no ground truth produces a figure that tracks the model, not the reviewer. "You did not ask about the rollback path" is falsifiable; a 7.4 is not |
+| — | No sync, no sharing, no leaderboard export | A review-quality metric is one export away from being a management metric |
+
+Four open questions are recorded unanswered, and the document names what to
+build first: one read-back, run by hand against a real finished review, before
+any schema or UI exists — because if that output is not worth reading, the rest
+is cheaply abandoned.
+
 ## What this record does not cover
 
 - **Nothing was verified by running the system.** The audit and these

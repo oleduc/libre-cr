@@ -49,6 +49,12 @@ function textOrNull(el: Element | null): string | null {
   return t.length ? t : null;
 }
 
+/** Whether this is the diff view (`/files`, which GitHub serves as
+ *  `/changes`) — the only place the embedded payload carries review threads. */
+function isDiffView(pathname: string = globalThis.location?.pathname ?? ""): boolean {
+  return /\/(files|changes)(\/|$)/.test(pathname);
+}
+
 export function scrapePr(doc: ParentNode = globalThis.document): ScrapeOutput {
   const warnings: string[] = [];
   const loc = isPullRequestPage();
@@ -106,7 +112,11 @@ export function scrapePr(doc: ParentNode = globalThis.document): ScrapeOutput {
   if (loc && data.base_branch === null && data.head_branch === null) {
     warnings.push("missing base/head — selectors may need refresh");
   }
-  if (loc && !comments) {
+  // Only the diff view's payload carries review threads. On the Conversation
+  // tab there is nothing to read and nothing wrong, so saying the shape may
+  // have changed there is a false alarm — and the reviewer cannot tell it from
+  // a real one.
+  if (loc && isDiffView() && !comments) {
     warnings.push("could not read review comments — payload shape may have changed");
   }
 

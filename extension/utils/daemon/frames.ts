@@ -152,6 +152,8 @@ export interface SessionTurnRow {
   user_content?: string;
   severity?: "info" | "suggestion" | "warning" | "critical";
   selection?: unknown;
+  /** The presentation calls this turn made, successful ones only, in order. */
+  presentation?: { tool: string; input: Record<string, unknown> }[];
 }
 
 export interface GetSessionResponse {

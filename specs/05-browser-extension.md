@@ -243,12 +243,25 @@ control whose click does nothing. Selecting a file-level comment would need
 
 Separately from selection, the scraper captures **all** review comments into
 `pr_data.comments` for `get_pr_comments` (`04-review-daemon.md` § Internal
-Tools). That path reads the embedded page payload
+Tools). Only the **diff view** carries them: the Conversation tab's embedded
+payload has no `pullRequestsChangesRoute` at all, so a scrape there states
+nothing about comments — which is not a failure, and is not warned about. The
+daemon carries the stored comments forward when a scrape omits them, so opening
+the Conversation tab does not delete what the Files tab captured. That path reads the embedded page payload
 (`script[type="application/json"][data-target="react-app.embeddedData"]`),
 joining `markers.threads` with each `diffSummaries[].markersMap` for the
 anchor, because the DOM holds neither the virtualized threads nor the resolved
 ones. Selection uses the DOM instead: it needs the element the reviewer is
 hovering, which is by definition mounted.
+
+**The selection layer's listeners attach once.** They live on `document`, and
+the effect that installs them depends on whether the layer is enabled — never
+on the handler's identity. A caller that builds its handler inline (the normal
+way to write one) would otherwise re-attach on every render, and re-attaching
+re-reads the URL hash and re-emits the selection, which re-renders: a loop that
+allocated until Chrome killed the tab. The handler is read through a ref, and
+an unchanged selection is not treated as a state change, so the cycle has no
+way to start.
 
 The selection is sticky — it persists until cleared or replaced. The Q&A panel header shows the current selection ("`src/auth.ts:42-48` selected · [×]"). Asking a question without a selection is allowed (it's just "ask about this PR").
 

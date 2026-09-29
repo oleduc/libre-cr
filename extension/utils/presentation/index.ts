@@ -29,6 +29,16 @@ export interface PresentationManager {
   steps: PresentationStep[];
   /** Re-apply steps 0..=index from a clean page (all steps when omitted). */
   replayTo(index?: number): Promise<void>;
+  /**
+   * Put a *recorded* answer's effects back on the diff — the steps come from
+   * the session rather than from this turn's live calls.
+   *
+   * Clears first: two answers' highlights on one diff cannot be told apart.
+   * Reports how many landed, because the diff may have moved since (a file
+   * collapsed, a line gone after a push), and claiming otherwise is the
+   * failure these rules exist to prevent.
+   */
+  replaySteps(steps: PresentationStep[]): Promise<{ applied: number; total: number }>;
   /** Tour mode: show only step `index` (clean page, apply it, scroll to it). */
   showStep(index: number): Promise<void>;
   /** Forget the recorded steps (start of a new question). */
@@ -171,6 +181,21 @@ export function createPresentationManager(
       }
       fire();
     },
+    async replaySteps(steps: PresentationStep[]) {
+      clearPresentation(ctx, "all");
+      state.effects.length = 0;
+      let applied = 0;
+      for (const step of steps) {
+        const outcome = await dispatchPresentationCall(ctx, step.tool, step.input);
+        if (outcome.ok) {
+          applied += 1;
+          state.effects.push({ effect_id: outcome.effect_id, tool: step.tool });
+        }
+      }
+      fire();
+      return { applied, total: steps.length };
+    },
+
     resetSteps() {
       state.steps.length = 0;
       fire();

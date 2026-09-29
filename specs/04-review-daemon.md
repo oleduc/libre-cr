@@ -339,6 +339,12 @@ The presentation-tool category is only registered for turns that have an active 
   comments, 1,200 chars per body — and `truncated` is true when that bit, or
   GitHub's own thread pagination, dropped anything.
 
+  Session `pr_data` **carries comments forward**: a scrape that says nothing
+  about them (the Conversation tab, whose payload has none) leaves the stored
+  ones in place rather than replacing the row with a version that has none.
+  Absent is not empty here either — a page that cannot see something must not
+  erase it.
+
   When the extension could not read the payload at all, the result carries
   `unavailable: true` instead of an empty list. An empty `comments` with no
   such flag means the PR genuinely has no line comments. The tool previously
