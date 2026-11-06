@@ -99,11 +99,16 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
     styleEl.textContent = PANEL_STYLES;
   }, [styleEl]);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
+  // The setup run: scrape the page, upsert the session, make sure the checkout
+  // is ready. Mount does it once; "Re-scan page" does it again, because the
+  // page it reads is not always finished when the panel loads — a scrape that
+  // ran early (or on a view whose markup we do not read yet) leaves the
+  // session with no base branch, and until now the only way to try again was
+  // reloading the tab and losing the conversation.
+  const runSetup = useCallback(
+    async (isCancelled: () => boolean) => {
       const auth = await getDaemonAuth();
-      if (cancelled) return;
+      if (isCancelled()) return;
       if (!auth) {
         setState({ status: "not_paired", warnings: [] });
         return;
@@ -120,14 +125,14 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
       const loadHistory = async (sessionId: string) => {
         try {
           const detail = await c.getSession(sessionId);
-          if (!cancelled) setHistory(turnsFromSession(detail.turns ?? []));
+          if (!isCancelled()) setHistory(turnsFromSession(detail.turns ?? []));
         } catch {
-          if (!cancelled) setHistory([]);
+          if (!isCancelled()) setHistory([]);
         }
       };
       try {
         const sess = await c.createOrUpdateSession(prUrl, scrape.data);
-        if (cancelled) return;
+        if (isCancelled()) return;
         void loadHistory(sess.session_id);
         if (sess.worktree_ready) {
           setState({
@@ -147,7 +152,7 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
             pendingAction: sess.pending_action,
           });
           await pollUntilReady(c, sess.session_id, (error) => {
-            if (cancelled) return;
+            if (isCancelled()) return;
             setState((s) =>
               error === null
                 ? { ...s, status: "ready" }
@@ -163,11 +168,30 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
           warnings: scrape.warnings,
         });
       }
-    })();
+    },
+    [prUrl],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void runSetup(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, [prUrl]);
+  }, [runSetup]);
+
+  // What the page is telling us about itself, so a re-scan can be judged
+  // rather than guessed at. The base branch is the field the daemon needs to
+  // compute a diff at all.
+  const [rescanning, setRescanning] = useState(false);
+  const onRescan = useCallback(async () => {
+    setRescanning(true);
+    try {
+      await runSetup(() => false);
+    } finally {
+      setRescanning(false);
+    }
+  }, [runSetup]);
 
   // Auto-open once things settle: history → open on it; a problem → open so
   // it is visible; a clean, empty session → stay closed behind the button.
@@ -270,6 +294,8 @@ export function ContentApp({ prUrl, styleEl }: ContentAppProps) {
             onClearSelection={() => setSelection(null)}
             onClose={() => setOpen(false)}
             warnings={state.warnings}
+            onRescan={onRescan}
+            rescanning={rescanning}
             prDiffChanged={state.prDiffChanged}
             headSha={state.headSha ?? null}
           />

@@ -254,6 +254,17 @@ anchor, because the DOM holds neither the virtualized threads nor the resolved
 ones. Selection uses the DOM instead: it needs the element the reviewer is
 hovering, which is by definition mounted.
 
+**Re-scan page.** The panel offers a control — in the footer, and beside the
+selector warnings when there are any — that re-runs the scrape, upserts the
+session with what it found, and re-checks the checkout. The setup is not a
+one-shot: the panel mounts at `document_idle`, which is not necessarily after
+GitHub has finished rendering its header, and a view whose markup the selectors
+do not cover leaves the same hole. Until this existed, the only retry was
+reloading the tab, which costs the conversation in the panel.
+
+It re-runs the same path as mount, so it is also the way to pick up a PR whose
+head moved, or a checkout that failed to prepare, without a reload.
+
 **The selection layer's listeners attach once.** They live on `document`, and
 the effect that installs them depends on whether the layer is enabled — never
 on the handler's identity. A caller that builds its handler inline (the normal

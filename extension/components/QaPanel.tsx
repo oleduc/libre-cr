@@ -22,6 +22,12 @@ export interface QaPanelProps {
   onClearSelection: () => void;
   onClose: () => void;
   warnings?: string[];
+  /** Re-run the scrape and the session setup. The page is not always finished
+   *  when the panel loads, and a scrape that read it too early — or read a
+   *  view whose markup we do not support — leaves the session without the
+   *  fields the daemon needs. */
+  onRescan?: () => Promise<void> | void;
+  rescanning?: boolean;
   /** If true, the daemon detected a new head_sha since this session was last seen. */
   prDiffChanged?: boolean;
   /** The current head_sha for this PR (used to scope dismissal). */
@@ -480,6 +486,17 @@ export function QaPanel(props: QaPanelProps) {
               <li key={i}>{w}</li>
             ))}
           </ul>
+          {props.onRescan ? (
+            <button
+              type="button"
+              data-testid="rescan"
+              disabled={props.rescanning}
+              style={{ marginTop: 6 }}
+              onClick={() => void props.onRescan?.()}
+            >
+              {props.rescanning ? "Re-scanning…" : "Re-scan page"}
+            </button>
+          ) : null}
         </div>
       ) : null}
       <div className="libre-cr-selection">
@@ -578,6 +595,16 @@ export function QaPanel(props: QaPanelProps) {
             onClick={() => openTour(0)}
           >
             Tour ({effects.steps})
+          </button>
+        ) : null}
+        {props.onRescan ? (
+          <button
+            data-testid="rescan-footer"
+            disabled={props.rescanning}
+            title="Read this page again and redo the session setup — use it when the panel loaded before the page finished, or after switching view"
+            onClick={() => void props.onRescan?.()}
+          >
+            {props.rescanning ? "Re-scanning…" : "Re-scan page"}
           </button>
         ) : null}
         <button
