@@ -177,12 +177,65 @@ impl ToolRouter {
             .map(|b| format!("origin/{b}"))
     }
 
+    /// The repository's own default branch, as `origin/<branch>` — the fallback
+    /// when the page did not state a base. Asked of the code daemon, which
+    /// reads it from the clone, so it is observed rather than assumed.
+    async fn default_branch_ref(&self) -> Option<String> {
+        let repo_id = self.repo_id.clone()?;
+        let found = self
+            .code
+            .call("discover_repo", serde_json::json!({ "repo_id": repo_id }))
+            .await
+            .ok()?;
+        found
+            .get("default_branch")
+            .and_then(|v| v.as_str())
+            .filter(|b| !b.is_empty())
+            .map(|b| format!("origin/{b}"))
+    }
+
     /// `get_pr_diff` computed on the prepared worktree: the extension never
     /// scraped hunks, so the honest source is `git_diff` base → PR head.
     /// Falls back to the (empty) scraped payload when there is no worktree.
     async fn pr_diff(&self, input: &serde_json::Value) -> Result<serde_json::Value> {
-        let (Some(path), Some(base)) = (&self.worktree_path, self.base_ref()) else {
-            return self.internal.call("get_pr_diff", input.clone()).await;
+        // A page that no longer states the base branch is the common failure —
+        // GitHub's markup moves, and the scrape loses a field. The repository
+        // itself knows its default branch, which is what the overwhelming
+        // majority of PRs target, so ask it rather than answering nothing.
+        // Which base was used is reported with the diff: a guessed base that
+        // reads as a stated one is how a wrong diff becomes a confident answer.
+        let (base, assumed) = match self.base_ref() {
+            Some(base) => (Some(base), false),
+            None => (self.default_branch_ref().await, true),
+        };
+        let (Some(path), Some(base)) = (&self.worktree_path, base) else {
+            // The scraped payload carries no hunks, so this fallback can only
+            // ever answer `{files: []}` — which reads as "this PR changes
+            // nothing" and was acted on as such when a GitHub markup change
+            // left `base_branch` unscraped. Say what is missing instead.
+            let scraped = self.internal.call("get_pr_diff", input.clone()).await?;
+            let empty = scraped
+                .get("files")
+                .and_then(|f| f.as_array())
+                .is_none_or(|f| f.is_empty());
+            if !empty {
+                return Ok(scraped);
+            }
+            let missing = if self.worktree_path.is_none() {
+                "the repository checkout is not ready"
+            } else {
+                "the page did not state the PR's base branch, so there is nothing to diff against"
+            };
+            return Ok(serde_json::json!({
+                "files": [],
+                "unavailable": true,
+                "reason": missing,
+                "note": format!(
+                    "The diff could not be computed: {missing}. This is not an empty PR — do not \
+                     describe it as unchanged. Read the checkout directly (read_file, grep, \
+                     git_log, git_show) and say the diff was unavailable."
+                ),
+            }));
         };
         // Three-dot (merge-base) diff: what the PR page shows. Tip-to-tip made
         // every commit `main` gained since the PR forked look like a deletion.
@@ -199,7 +252,25 @@ impl ToolRouter {
         if narrowed {
             args["paths"] = input["paths"].clone();
         }
-        let diff = self.code.call("git_diff", args).await?;
+        let mut diff = self.code.call("git_diff", args).await?;
+        if assumed {
+            if let Some(map) = diff.as_object_mut() {
+                map.insert(
+                    "base_ref".into(),
+                    serde_json::json!(base.trim_start_matches("origin/")),
+                );
+                map.insert("base_ref_assumed".into(), serde_json::json!(true));
+                map.insert(
+                    "note".into(),
+                    serde_json::json!(format!(
+                        "The page did not state this PR's base branch, so the diff is against the \
+                     repository's default branch ({}). If the PR targets a different branch, this \
+                     diff is wider than the PR — say so rather than reviewing it as the PR's own.",
+                        base.trim_start_matches("origin/")
+                    )),
+                );
+            }
+        }
         if narrowed {
             return Ok(diff);
         }
@@ -286,6 +357,104 @@ fn schema_has_property(schema: &serde_json::Value, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A page that stops stating the base branch must not produce "this PR
+    /// changes nothing". GitHub's markup moved, the scrape lost `base_branch`,
+    /// and `get_pr_diff` answered `{files: []}` — which was reviewed as an
+    /// empty PR. Now the repository's own default branch is used, and the
+    /// answer says that is what happened.
+    #[tokio::test]
+    async fn an_unstated_base_falls_back_to_the_default_branch_and_says_so() {
+        struct Repo(std::sync::Mutex<Vec<String>>);
+        #[async_trait::async_trait]
+        impl CodeDaemonClient for Repo {
+            async fn list_tools(&self) -> crate::error::Result<Vec<ToolSchema>> {
+                Ok(vec![ToolSchema {
+                    name: "git_diff".into(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                }])
+            }
+            async fn call(
+                &self,
+                name: &str,
+                _input: serde_json::Value,
+            ) -> crate::error::Result<serde_json::Value> {
+                self.0.lock().unwrap().push(name.to_string());
+                Ok(match name {
+                    "discover_repo" => serde_json::json!({"ok": true, "default_branch": "main"}),
+                    _ => serde_json::json!({"files": [{"path": "a.rs"}]}),
+                })
+            }
+        }
+        let code = Arc::new(Repo(std::sync::Mutex::new(vec![])));
+        let schemas = code.list_tools().await.unwrap();
+        let internal = InternalContext {
+            session_id: "s".into(),
+            // What a broken scrape leaves behind: a title, and no base branch.
+            pr_data: serde_json::json!({"title": "t"}),
+            selection: None,
+            store: crate::storage::Store::open_in_memory().unwrap(),
+        };
+        let router = ToolRouter::new(code.clone(), schemas, internal, Some("/wt".into()))
+            .with_repo_id(Some("r1".into()));
+
+        let out = router
+            .dispatch(&ToolCall {
+                id: "c1".into(),
+                name: "get_pr_diff".into(),
+                input: serde_json::json!({"paths": ["a.rs"]}),
+            })
+            .await;
+
+        assert!(out.ok, "{out:?}");
+        assert_eq!(out.value["base_ref"], "main");
+        assert_eq!(out.value["base_ref_assumed"], true);
+        assert!(out.value["note"]
+            .as_str()
+            .unwrap()
+            .contains("did not state"));
+        assert!(code
+            .0
+            .lock()
+            .unwrap()
+            .contains(&"discover_repo".to_string()));
+    }
+
+    /// With no base *and* no repository to ask, the answer must still not be an
+    /// empty file list: nothing was computed, and an empty diff is a claim.
+    #[tokio::test]
+    async fn an_uncomputable_diff_is_reported_as_unavailable_not_as_empty() {
+        let store = crate::storage::Store::open_in_memory().unwrap();
+        let sess = store
+            .upsert_session("https://github.com/a/b/pull/3", serde_json::json!({}))
+            .await
+            .unwrap();
+        let code = Arc::new(MockCodeDaemonClient);
+        let schemas = code.list_tools().await.unwrap();
+        let internal = InternalContext {
+            session_id: sess.session_id,
+            pr_data: serde_json::json!({"title": "t"}),
+            selection: None,
+            store,
+        };
+        // No worktree, no repo id: nothing to compute a diff from.
+        let router = ToolRouter::new(code, schemas, internal, None);
+
+        let out = router
+            .dispatch(&ToolCall {
+                id: "c1".into(),
+                name: "get_pr_diff".into(),
+                input: serde_json::json!({}),
+            })
+            .await;
+
+        assert_eq!(out.value["unavailable"], true);
+        assert!(out.value["note"]
+            .as_str()
+            .unwrap()
+            .contains("not an empty PR"));
+    }
+
     /// An unnarrowed diff on a big PR comes back as a manifest, not as the
     /// first 3% of a JSON blob. Measured: 73 files, 643,463 chars, of which
     /// the model saw 20,000 — mostly `uv.lock` and CI churn, because files

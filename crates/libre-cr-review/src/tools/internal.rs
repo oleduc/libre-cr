@@ -18,7 +18,7 @@ pub fn internal_tool_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "get_pr_diff".into(),
-            description: "The PR's changes (base branch → PR head) as structured per-file hunks, computed on the prepared checkout. Optional `paths` narrows it to specific files. On a large PR, calling this without `paths` returns a file *manifest* instead of content (`files_only: true`, each file with its size) — read it, then call again with the paths worth reading.".into(),
+            description: "The PR's changes (base branch → PR head) as structured per-file hunks, computed on the prepared checkout. An `unavailable` field means the diff could not be computed at all — never read that as an empty PR. `base_ref_assumed: true` means the page did not state the base branch and the repository default was used instead, so the diff may be wider than the PR. Optional `paths` narrows it to specific files. On a large PR, calling this without `paths` returns a file *manifest* instead of content (`files_only: true`, each file with its size) — read it, then call again with the paths worth reading.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
