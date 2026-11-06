@@ -704,6 +704,27 @@ remains deliberately unfixed. None of the open items block the demo path.
   the embedded page payload. Still open from the same finding: reading comments
   through the REST API instead of the page, which needs a GitHub token the
   daemon does not have (**v2**).
+- **GitHub's new PR view is unsupported, and the scrape degrades quietly on
+  it.** Observed on PR #565 (2026-11-06), with the reviewer opted into the new
+  view: `title`, `head_sha` and the review `comments` were captured — so the
+  embedded payload still carries `headOid` and
+  `pullRequestsChangesRoute.markers.threads` — while `base_branch`,
+  `head_branch`, `author`, `description` and `files_changed` all came back
+  empty. Those five are the DOM-selector fields; everything payload-sourced
+  survived, which is the argument for moving the rest onto the payload rather
+  than refreshing class names again.
+
+  The visible symptom was `get_pr_diff` answering `{files: []}`, since no base
+  branch means nothing to diff against. That half is fixed — an uncomputable
+  diff reports `unavailable`, and an unstated base falls back to the
+  repository's default branch, labelled — so the new view is degraded rather
+  than wrong. The carry-forward rule also proved itself here: the comments
+  captured on one load survived later loads that captured none.
+
+  Not yet built, and not guessed at: the selectors (or payload paths) for the
+  new view. Capturing them needs a session on that view, which is a five-minute
+  probe when someone is next on it. *Found in manual testing; the reviewer
+  switched back to the old view meanwhile.*
 - **`SpawnedClient` reconnect/restart loop** still lightly covered. *(round-1 I23.)*
 - **`MockCodeDaemonClient` tool/schema drift** vs the real daemon. *(round-1 I25.)*
 
